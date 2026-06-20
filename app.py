@@ -1,7 +1,13 @@
 """J-REIT 分析ダッシュボード（read-only / cached-first）。
 SQLite(data/jreit.db) のみ参照。スマホ/PC両対応。起動: streamlit run app.py
+
+画面（上部の切替ボタン）:
+  📋 ダッシュボード … サマリ一覧 + 個別銘柄（サマリで選んだ行が自動で個別に反映）
+  ⚖️ 銘柄比較      … 複数銘柄を横並びでスペック比較（Apple compare 風）
+  💼 マイポートフォリオ … 保有銘柄から全体の利回り・分配金見込み・含み益・用途構成を集計
 """
 from __future__ import annotations
+import datetime as dt
 import re
 import sqlite3
 from pathlib import Path
@@ -36,6 +42,16 @@ MA_KEYS = ["ma_25d", "ma_75d", "ma_200d", "ma_75w", "ma_200w", "ma_75m", "ma_200
 
 st.set_page_config(page_title="J-REIT 分析", page_icon="🏢", layout="wide",
                    initial_sidebar_state="collapsed")
+
+# multiselect のタグ（チップ）背景を白に統一（用途別の赤色を消す）
+st.markdown(
+    """<style>
+    span[data-baseweb="tag"]{background-color:#ffffff !important;border:1px solid #cbd5e1 !important;}
+    span[data-baseweb="tag"] span{color:#1f2937 !important;}
+    span[data-baseweb="tag"] svg{fill:#64748b !important;}
+    </style>""",
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_data(ttl=120)
@@ -85,17 +101,13 @@ def period_key(label):
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
 
-def main():
-    st.title("🏢 J-REIT 分析ダッシュボード")
-    if not DB.exists():
-        st.error("data/jreit.db がありません。"); return
+# ---------------------------------------------------------------------------
+# 共通: データフレーム整形
+# ---------------------------------------------------------------------------
+def build_frame():
     reits, metrics, divs, runs = load("reits"), load("stock_metrics"), load("dividends"), load("scrape_runs")
     if reits.empty:
-        st.warning("データが空です。"); return
-    if not runs.empty:
-        last = runs.sort_values("finished_at").iloc[-1]
-        st.caption(f"最終更新 {last.get('finished_at','?')} ・ 銘柄 {len(reits)} ・ キャッシュ参照のみ")
-
+        return None, None, None, reits
     df = reits.merge(metrics, on="code", how="left", suffixes=("", "_m"))
     uinfo = df.apply(use_info, axis=1)
     df["use_primary"] = uinfo.map(lambda x: x[0])
@@ -114,8 +126,42 @@ def main():
 
     df["exc6"] = df["code"].map(lambda c: excess_in_window(c, 6))
     df["exc10"] = df["code"].map(lambda c: excess_in_window(c, 10))
+    return df, divs, runs, reits
 
-    # ===== フィルタ =====
+
+def label_maps(df):
+    d = df.sort_values("code")
+    l2c, c2l, labels = {}, {}, []
+    for _, r in d.iterrows():
+        lbl = f"{r['code']} {r['name']}"
+        labels.append(lbl)
+        l2c[lbl] = r["code"]
+        c2l[r["code"]] = lbl
+    return labels, l2c, c2l
+
+
+def annual_distribution(divs, code):
+    """直近12ヶ月ぶんの1口当たり分配金・利益超過分配金を返す。
+    年1回/半期/四半期決算が混在しても正しく年換算できるよう、最新期から12ヶ月内の期を合算。"""
+    d = divs[(divs["code"] == code) & (divs["period_label"] != "latest")].copy()
+    if d.empty:
+        return None, None
+    d["ym"] = d["period_label"].map(lambda l: (lambda k: k[0] * 12 + k[1])(period_key(l)))
+    d = d[d["ym"] > 0]
+    if d.empty:
+        return None, None
+    latest = d["ym"].max()
+    win = d[latest - d["ym"] < 12]   # 直近12ヶ月（年1回=1期, 半期=2期, 四半期=4期）
+    tot = win["total_distribution"].sum(skipna=True)
+    exc = win["excess_distribution"].sum(skipna=True)
+    return (float(tot) if pd.notna(tot) else None,
+            float(exc) if pd.notna(exc) else None)
+
+
+# ===========================================================================
+# 📋 ダッシュボード
+# ===========================================================================
+def render_dashboard(df, divs):
     st.subheader("📋 サマリ")
     c1, c2, c3 = st.columns([2, 2, 1])
     uses = sorted(df["use_primary"].dropna().unique().tolist())
@@ -177,7 +223,14 @@ def main():
     for c, spec in num_fmt.items():
         summary[c] = summary[c].map(lambda v, s=spec: "—" if pd.isna(v) else s.format(v))
     styled = summary.style.apply(color_row, axis=1)
-    st.dataframe(styled, use_container_width=True, hide_index=True, height=460)
+
+    st.caption("行をクリックすると下の「個別銘柄」に自動表示されます。")
+    event = st.dataframe(styled, use_container_width=True, hide_index=True, height=460,
+                         on_select="rerun", selection_mode="single-row", key="summary_tbl")
+    sel = event.selection.rows if event and event.selection else []
+    if sel:
+        st.session_state["detail_code"] = summary.iloc[sel[0]]["コード"]
+
     legend = "　".join(
         f'<span style="background:{c[0]};color:{c[1]};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
         for k, c in ASSET_STYLE.items())
@@ -186,10 +239,17 @@ def main():
 
     # ===== 個別 =====
     st.subheader("🔎 個別銘柄")
-    opts = {f"{r.code} {r['name']}": r.code for _, r in df.sort_values("code").iterrows()}
-    code = opts[st.selectbox("銘柄を選択", list(opts.keys()))]
-    row = df[df["code"] == code].iloc[0]
+    labels, l2c, c2l = label_maps(df)
+    default_code = st.session_state.get("detail_code", df.sort_values("code").iloc[0]["code"])
+    if default_code not in c2l:
+        default_code = df.sort_values("code").iloc[0]["code"]
+    chosen = st.selectbox("銘柄を選択", labels, index=labels.index(c2l[default_code]))
+    st.session_state["detail_code"] = l2c[chosen]
+    render_detail(df, divs, l2c[chosen])
 
+
+def render_detail(df, divs, code):
+    row = df[df["code"] == code].iloc[0]
     bg, fg = ASSET_STYLE.get(row["use_primary"], ("#ddd", "#000"))
     st.markdown(
         f'**{row["name"]}**（{code}）　'
@@ -212,17 +272,7 @@ def main():
         st.markdown("**用途別ポートフォリオ構成**")
         amap = {ja: float(row[col]) for col, ja in ASSET_COLS.items() if pd.notna(row.get(col)) and row.get(col)}
         if amap:
-            order = list(PIE_COLORS.keys())
-            pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
-            donut = alt.Chart(pdf).mark_arc(innerRadius=55).encode(
-                theta=alt.Theta("比率:Q", stack=True),
-                color=alt.Color("用途:N",
-                                scale=alt.Scale(domain=order, range=[PIE_COLORS[k] for k in order]),
-                                legend=alt.Legend(title=None)),
-                order=alt.Order("比率:Q", sort="descending"),
-                tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")],
-            ).properties(height=300)
-            st.altair_chart(donut, use_container_width=True)
+            donut_chart(amap)
             brk = "　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1]))
             est = "（推定）" if row.get("asset_estimated") else ""
             st.caption(f"{brk}　／　物件数 {fmt(row['num_properties'])} {est}")
@@ -242,32 +292,291 @@ def main():
     d = divs[(divs["code"] == code) & (divs["period_label"] != "latest")].copy()
     if d.empty:
         st.caption("分配金データなし")
-    else:
-        d = d.assign(k=d["period_label"].map(period_key)).sort_values("k", ascending=False)
-        d10 = d.head(10)
+        return
+    d = d.assign(k=d["period_label"].map(period_key)).sort_values("k", ascending=False)
+    d10 = d.head(10)
 
-        def agg(dd):
-            n = len(dd)
-            ne = int((dd["excess_present"] == 1).sum())
-            tot = dd["total_distribution"].sum(skipna=True)
-            exc = dd["excess_distribution"].sum(skipna=True)
-            ratio = (exc / tot * 100) if tot else None
-            return n, ne, ratio
-        n6, ne6, r6 = agg(d.head(6))
-        n10, ne10, r10 = agg(d10)
-        a, b = st.columns(2)
-        a.metric("利益超過 直近6期", f"{ne6}/{n6} 期", f"分配金の {r6:.1f}%" if (ne6 and r6) else "なし")
-        b.metric("利益超過 直近10期", f"{ne10}/{n10} 期", f"分配金の {r10:.1f}%" if (ne10 and r10) else "なし")
+    def agg(dd):
+        n = len(dd)
+        ne = int((dd["excess_present"] == 1).sum())
+        tot = dd["total_distribution"].sum(skipna=True)
+        exc = dd["excess_distribution"].sum(skipna=True)
+        ratio = (exc / tot * 100) if tot else None
+        return n, ne, ratio
+    n6, ne6, r6 = agg(d.head(6))
+    n10, ne10, r10 = agg(d10)
+    a, b = st.columns(2)
+    a.metric("利益超過 直近6期", f"{ne6}/{n6} 期", f"分配金の {r6:.1f}%" if (ne6 and r6) else "なし")
+    b.metric("利益超過 直近10期", f"{ne10}/{n10} 期", f"分配金の {r10:.1f}%" if (ne10 and r10) else "なし")
 
-        tbl = pd.DataFrame({
-            "期": d10["period_label"], "総分配金(円)": d10["total_distribution"],
-            "うち利益超過(円)": d10["excess_distribution"],
-            "利益超過比率%": d10["excess_ratio_pct"].round(2), "状態": d10["parse_status"],
+    tbl = pd.DataFrame({
+        "期": d10["period_label"], "総分配金(円)": d10["total_distribution"],
+        "うち利益超過(円)": d10["excess_distribution"],
+        "利益超過比率%": d10["excess_ratio_pct"].round(2), "状態": d10["parse_status"],
+    })
+    st.dataframe(tbl, use_container_width=True, hide_index=True)
+    plot = d10.dropna(subset=["total_distribution"]).sort_values("k")
+    if not plot.empty:
+        st.line_chart(plot.set_index("period_label")[["total_distribution", "excess_distribution"]])
+
+
+def donut_chart(amap: dict, height=300):
+    order = list(PIE_COLORS.keys())
+    pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
+    donut = alt.Chart(pdf).mark_arc(innerRadius=55).encode(
+        theta=alt.Theta("比率:Q", stack=True),
+        color=alt.Color("用途:N",
+                        scale=alt.Scale(domain=order, range=[PIE_COLORS[k] for k in order]),
+                        legend=alt.Legend(title=None)),
+        order=alt.Order("比率:Q", sort="descending"),
+        tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")],
+    ).properties(height=height)
+    st.altair_chart(donut, use_container_width=True)
+
+
+# ===========================================================================
+# ⚖️ 銘柄比較
+# ===========================================================================
+def render_comparison(df, divs):
+    st.subheader("⚖️ 銘柄比較")
+    labels, l2c, c2l = label_maps(df)
+    default = [c2l[c] for c in ["8985", "8960", "8963"] if c in c2l][:3]
+    picks = st.multiselect("比較する銘柄（2〜6銘柄を推奨）", labels, default=default, max_selections=6)
+    if len(picks) < 2:
+        st.info("2銘柄以上を選択してください。")
+        return
+    codes = [l2c[p] for p in picks]
+    rows = {c: df[df["code"] == c].iloc[0] for c in codes}
+
+    # 比較する指標（label, accessor, 数値の良し悪し: 'high'=高いほど良 / 'low' / None=非数値）
+    def excess_label(c):
+        a, b = annual_distribution(divs, c)
+        if a is None:
+            return "—"
+        if not b:
+            return "なし"
+        return f"{b / a * 100:.0f}%"
+
+    specs = [
+        ("主用途", lambda c: rows[c]["use_label"], None),
+        ("タイプ", lambda c: rows[c]["type_jp"], None),
+        ("利回り %", lambda c: rows[c]["yield_total"], "high"),
+        ("価格 円", lambda c: rows[c]["latest_price"], None),
+        ("時価総額 億円", lambda c: rows[c]["mktcap_oku"], "high"),
+        ("NAV倍率", lambda c: rows[c]["nav_ratio"], "low"),
+        ("物件数", lambda c: rows[c]["num_properties"], "high"),
+        ("200日乖離 %", lambda c: rows[c]["dev_200d_pct"], "low"),
+        ("6年平均乖離 %", lambda c: rows[c]["dev_mean_6y_pct"], "low"),
+        ("リーマン比 %", lambda c: rows[c]["lehman_ratio_pct"], "high"),
+        ("年間分配金 円/口", lambda c: annual_distribution(divs, c)[0], "high"),
+        ("利益超過(分配比)", excess_label, None),
+    ]
+
+    headers = [f"{c} {rows[c]['name']}" for c in codes]
+    raw = {}      # 数値（ハイライト判定用）
+    disp = {}     # 表示文字列
+    for label, acc, _ in specs:
+        raw[label] = [acc(c) for c in codes]
+    fmt_map = {"利回り %": 2, "価格 円": 0, "時価総額 億円": 0, "NAV倍率": 2, "物件数": 0,
+               "200日乖離 %": 1, "6年平均乖離 %": 1, "リーマン比 %": 1, "年間分配金 円/口": 0}
+    for label, _, good in specs:
+        vals = raw[label]
+        out = []
+        for v in vals:
+            if good is None:
+                out.append("—" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v))
+            else:
+                out.append(fmt(v, fmt_map.get(label, 1)))
+        disp[label] = out
+
+    comp = pd.DataFrame(disp, index=headers).T  # index=指標, columns=銘柄
+    comp.columns = headers
+
+    # 各数値行のベスト値を太字ハイライト
+    best_cells = {}   # (row_label, col_idx)
+    for label, _, good in specs:
+        if good is None:
+            continue
+        nums = [(i, v) for i, v in enumerate(raw[label]) if v is not None and not (isinstance(v, float) and pd.isna(v))]
+        if not nums:
+            continue
+        bi = (max if good == "high" else min)(nums, key=lambda x: x[1])[0]
+        best_cells[label] = bi
+
+    def hl(row):
+        styles = []
+        bi = best_cells.get(row.name)
+        for i in range(len(row)):
+            styles.append("background-color:#fff7cc;font-weight:700" if (bi is not None and i == bi) else "")
+        return styles
+
+    use_rows = {"主用途", "タイプ"}
+
+    def color_use(row):
+        if row.name not in use_rows:
+            return [""] * len(row)
+        out = []
+        for c in codes:
+            key = rows[c]["use_primary"] if row.name == "主用途" else None
+            if row.name == "タイプ":
+                t = rows[c]["type_jp"]
+                if any(k in t for k in ("総合", "複合", "統合")):
+                    key = "その他"
+                else:
+                    key = next((ja for ja in ["オフィス", "ホテル", "物流", "商業", "住居", "ヘルスケア"] if ja in t), "その他")
+            bgfg = ASSET_STYLE.get(key, ("", ""))
+            out.append(f"background-color:{bgfg[0]};color:{bgfg[1]};font-weight:600" if bgfg[0] else "")
+        return out
+
+    styled = comp.style.apply(hl, axis=1).apply(color_use, axis=1)
+    st.dataframe(styled, use_container_width=True, height=460)
+    st.caption("黄色 = その指標のベスト値（利回り/物件数/リーマン比は高い方、NAV倍率/乖離は低い方）。")
+
+    # 用途構成を並べて表示
+    st.markdown("**用途別構成**")
+    pcols = st.columns(len(codes))
+    for col, c in zip(pcols, codes):
+        with col:
+            st.caption(f"{c} {rows[c]['name']}")
+            amap = {ja: float(rows[c][k]) for k, ja in ASSET_COLS.items()
+                    if pd.notna(rows[c].get(k)) and rows[c].get(k)}
+            if amap:
+                donut_chart(amap, height=200)
+            else:
+                st.caption("構成データなし")
+
+
+# ===========================================================================
+# 💼 マイポートフォリオ
+# ===========================================================================
+def render_portfolio(df, divs):
+    st.subheader("💼 マイポートフォリオ")
+    st.caption("保有銘柄（コード・口数・取得単価）を入力すると、全体の利回り・分配金見込み・含み益・用途構成を集計します。")
+
+    _, l2c, c2l = label_maps(df)
+    if "pf" not in st.session_state:
+        st.session_state["pf"] = pd.DataFrame(
+            {"コード": ["8985", "8960"], "口数": [1, 1], "取得単価": [np.nan, np.nan]})
+    edited = st.data_editor(
+        st.session_state["pf"], num_rows="dynamic", use_container_width=True, key="pf_editor",
+        column_config={
+            "コード": st.column_config.TextColumn("コード", help="4桁の証券コード", required=True),
+            "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
+            "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
         })
-        st.dataframe(tbl, use_container_width=True, hide_index=True)
-        plot = d10.dropna(subset=["total_distribution"]).sort_values("k")
-        if not plot.empty:
-            st.line_chart(plot.set_index("period_label")[["total_distribution", "excess_distribution"]])
+
+    holds = []
+    for _, r in edited.iterrows():
+        code = str(r["コード"]).strip()
+        if code not in c2l:
+            continue
+        rec = df[df["code"] == code].iloc[0]
+        units = float(r["口数"]) if pd.notna(r["口数"]) else 0.0
+        price = float(rec["latest_price"]) if pd.notna(rec["latest_price"]) else None
+        cost = float(r["取得単価"]) if pd.notna(r["取得単価"]) else None
+        annual_pu, excess_pu = annual_distribution(divs, code)
+        mval = price * units if price is not None else None
+        holds.append({
+            "code": code, "name": rec["name"], "units": units, "price": price,
+            "cost": cost, "value": mval,
+            "acq": (cost * units) if cost is not None else None,
+            "gain": ((price - cost) * units) if (price is not None and cost is not None) else None,
+            "annual_income": (annual_pu * units) if annual_pu is not None else None,
+            "annual_excess": (excess_pu * units) if excess_pu is not None else None,
+            "yield": rec["yield_total"], "use_primary": rec["use_primary"],
+            "asset": {k: rec.get(k) for k in ASSET_COLS},
+        })
+    if not holds:
+        st.info("有効な保有銘柄がありません（コードがDBに無い等）。")
+        return
+
+    tot_val = sum(h["value"] for h in holds if h["value"] is not None)
+    tot_acq = sum(h["acq"] for h in holds if h["acq"] is not None)
+    tot_gain = sum(h["gain"] for h in holds if h["gain"] is not None)
+    has_cost = any(h["gain"] is not None for h in holds)
+    tot_income = sum(h["annual_income"] for h in holds if h["annual_income"] is not None)
+    tot_excess = sum(h["annual_excess"] for h in holds if h["annual_excess"] is not None)
+    pf_yield = (tot_income / tot_val * 100) if tot_val else None
+
+    m = st.columns(4)
+    m[0].metric("評価額合計", fmt(tot_val, 0, " 円"))
+    m[1].metric("ポートフォリオ利回り", fmt(pf_yield, 2, "%"), help="年間分配金合計 ÷ 評価額合計（実績ベース）")
+    m[2].metric("年間分配金（見込み）", fmt(tot_income, 0, " 円"), help="直近2期＝1年の実績を据え置いた推定")
+    m[3].metric("含み益", fmt(tot_gain, 0, " 円") if has_cost else "—",
+                f"取得額 {fmt(tot_acq,0)} 円" if has_cost else "取得単価未入力",
+                delta_color="normal")
+    if tot_income:
+        st.caption(f"うち利益超過分配（年間・推定）: {fmt(tot_excess,0)} 円"
+                   f"（分配金の {tot_excess / tot_income * 100:.1f}%）")
+
+    # 分配金の累計見込み（直近実績を据え置いた推定）
+    st.markdown("**分配金 累計見込み（推定）**")
+    today = dt.date.today()
+    eoy = dt.date(today.year, 12, 31)
+    days_left = (eoy - today).days
+    cum_eoy = tot_income * (days_left / 365.0)           # 今年の残り期間ぶん
+    sched = pd.DataFrame({
+        "時点": [f"{today:%Y-%m-%d}（本日）", f"{today.year}年末",
+                f"{today.year + 1}年末", f"{today.year + 2}年末"],
+        "累計分配金(円)": [0.0, cum_eoy, cum_eoy + tot_income, cum_eoy + tot_income * 2],
+    })
+    sched["累計分配金(円)"] = sched["累計分配金(円)"].map(lambda v: f"{v:,.0f}")
+    st.dataframe(sched, use_container_width=True, hide_index=True)
+    st.caption("※ 本日を基準（0円）に、直近実績の年間分配金が今後も継続すると仮定した推定値です。")
+
+    # 用途構成（評価額加重）
+    cL, cR = st.columns([1, 1])
+    with cL:
+        st.markdown("**運用物件タイプ（評価額加重）**")
+        agg = {ja: 0.0 for ja in ASSET_COLS.values()}
+        wsum = 0.0
+        for h in holds:
+            if h["value"] is None:
+                continue
+            for k, ja in ASSET_COLS.items():
+                v = h["asset"].get(k)
+                if pd.notna(v):
+                    agg[ja] += float(v) / 100.0 * h["value"]
+            wsum += h["value"]
+        amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
+        if amap:
+            donut_chart(amap, height=260)
+            st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1])))
+        else:
+            st.caption("構成データなし")
+    with cR:
+        st.markdown("**保有明細**")
+        det = pd.DataFrame([{
+            "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
+            "評価額": fmt(h["value"], 0), "含み益": fmt(h["gain"], 0) if h["gain"] is not None else "—",
+            "年間分配金": fmt(h["annual_income"], 0),
+        } for h in holds])
+        st.dataframe(det, use_container_width=True, hide_index=True)
+
+
+# ===========================================================================
+# エントリ
+# ===========================================================================
+def main():
+    st.title("🏢 J-REIT 分析ダッシュボード")
+    if not DB.exists():
+        st.error("data/jreit.db がありません。"); return
+    df, divs, runs, reits = build_frame()
+    if df is None:
+        st.warning("データが空です。"); return
+    if runs is not None and not runs.empty:
+        last = runs.sort_values("finished_at").iloc[-1]
+        st.caption(f"最終更新 {last.get('finished_at','?')} ・ 銘柄 {len(reits)} ・ キャッシュ参照のみ")
+
+    page = st.radio("画面", ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"],
+                    horizontal=True, label_visibility="collapsed")
+    st.divider()
+    if page == "📋 ダッシュボード":
+        render_dashboard(df, divs)
+    elif page == "⚖️ 銘柄比較":
+        render_comparison(df, divs)
+    else:
+        render_portfolio(df, divs)
 
 
 if __name__ == "__main__":
