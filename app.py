@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
+import altair as alt   # Streamlit同梱（追加インストール不要）
 
 DB = Path(__file__).resolve().parent / "data" / "jreit.db"
 ASSET_COLS = {
@@ -203,15 +203,20 @@ def main():
         st.markdown("**用途別ポートフォリオ構成**")
         amap = {ja: float(row[col]) for col, ja in ASSET_COLS.items() if pd.notna(row.get(col)) and row.get(col)}
         if amap:
+            order = list(PIE_COLORS.keys())
             pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
-            fig = px.pie(pdf, values="比率", names="用途", hole=0.45,
-                         color="用途", color_discrete_map=PIE_COLORS)
-            fig.update_traces(textposition="inside", texttemplate="%{percent:.1%}", sort=False)
-            fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300,
-                              legend=dict(orientation="v", x=1, y=0.5))
-            st.plotly_chart(fig, use_container_width=True)
+            donut = alt.Chart(pdf).mark_arc(innerRadius=55).encode(
+                theta=alt.Theta("比率:Q", stack=True),
+                color=alt.Color("用途:N",
+                                scale=alt.Scale(domain=order, range=[PIE_COLORS[k] for k in order]),
+                                legend=alt.Legend(title=None)),
+                order=alt.Order("比率:Q", sort="descending"),
+                tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")],
+            ).properties(height=300)
+            st.altair_chart(donut, use_container_width=True)
+            brk = "　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1]))
             est = "（推定）" if row.get("asset_estimated") else ""
-            st.caption(f"物件数 {fmt(row['num_properties'])}　{est}")
+            st.caption(f"{brk}　／　物件数 {fmt(row['num_properties'])} {est}")
         else:
             st.caption("構成データなし")
     with cR:
