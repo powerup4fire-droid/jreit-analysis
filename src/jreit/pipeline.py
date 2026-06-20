@@ -36,6 +36,9 @@ def run(codes: list[str], cfg: Config) -> dict:
             # 1) japan-reit.com
             try:
                 reit = scrape_reit(client, cfg.sources["japan_reit_base"], code)
+                if not reit.name:   # 上場廃止等の汎用ページ＝無効。DBに入れずスキップ。
+                    clog.info("invalid/delisted page (no name) -> skip")
+                    continue
                 db.upsert_reit(con, reit, _now())
             except Exception as e:  # noqa
                 clog.error(f"reit scrape error: {e}")

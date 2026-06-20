@@ -58,10 +58,11 @@ def scrape_reit(client: HttpClient, base_url: str, code: str) -> Reit:
     soup = BeautifulSoup(resp.text, "lxml")
     text = re.sub(r"\s+", " ", soup.get_text(" "))
 
-    # 銘柄名
+    # 銘柄名: titleに含まれる「○○投資法人」のみ採用（本文サイドバーは使わない＝誤判定防止）。
+    # 上場廃止の汎用ページは title に銘柄名が無いため None になる。
     title = (soup.title.string if soup.title else "") or ""
-    m = re.search(r"([^\s（(]+投資法人)", title) or re.search(r"([^\s（(]+投資法人)", text)
-    r.name = m.group(1) if m else None
+    m = re.search(r"([^\s｜|（(][^｜|（(]*?投資法人)", title)
+    r.name = m.group(1).strip() if m else None
 
     # 分配金利回り（利益超過分配を除いた表記があれば別取り）
     r.yield_total = _num(r"利回り[^0-9]{0,12}(\d+\.\d+)\s*%", text)
