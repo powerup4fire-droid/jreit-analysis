@@ -150,13 +150,22 @@ def main():
     cols = list(summary.columns)
     i_use, i_type = cols.index("主用途"), cols.index("タイプ")
 
+    def type_style(type_jp):
+        t = str(type_jp)
+        if "総合" in t or "複合" in t or "統合" in t:   # 分散型はグレー
+            return ASSET_STYLE["その他"]
+        for ja in ["オフィス", "ホテル", "物流", "商業", "住居", "ヘルスケア"]:
+            if ja in t:
+                return ASSET_STYLE[ja]
+        return ASSET_STYLE["その他"]
+
     def color_row(row):
         s = [""] * len(row)
         bg, fg = ASSET_STYLE.get(primaries.iloc[row.name], ("", ""))
         if bg:
-            css = f"background-color:{bg};color:{fg};font-weight:600"
-            s[i_use] = css
-            s[i_type] = css
+            s[i_use] = f"background-color:{bg};color:{fg};font-weight:600"
+        tb, tf = type_style(row["タイプ"])      # タイプは「総合/複合」=グレー, 特化=用途色
+        s[i_type] = f"background-color:{tb};color:{tf};font-weight:600"
         return s
 
     st.dataframe(summary.style.apply(color_row, axis=1), use_container_width=True, hide_index=True, height=460)
