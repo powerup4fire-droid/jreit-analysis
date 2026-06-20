@@ -36,9 +36,28 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 CREATE TABLE IF NOT EXISTS field_errors (
   run_id TEXT, code TEXT, field TEXT, error TEXT, ts TEXT
 );
+CREATE TABLE IF NOT EXISTS fundamentals (
+  code TEXT PRIMARY KEY REFERENCES reits(code),
+  fiscal_period TEXT,            -- 会計期間末 (YYYY-MM-DD)
+  appraisal_value REAL,          -- 期末算定（鑑定評価）価額合計 円
+  book_value REAL,               -- 帳簿価額合計 円
+  unrealized_gain REAL,          -- 含み損益 = appraisal - book 円
+  unrealized_gain_pct REAL,      -- 含み益率 = unrealized_gain / book * 100
+  total_assets REAL,             -- 総資産 円
+  interest_bearing_debt REAL,    -- 有利子負債 円
+  ltv_pct REAL,                  -- LTV = interest_bearing_debt / total_assets * 100
+  noi REAL,                      -- 不動産賃貸事業 NOI 円（取得できれば）
+  doc_id TEXT,                   -- EDINET docID
+  source TEXT,                   -- "edinet"
+  parse_status TEXT,             -- ok / partial / no_key / not_found / error
+  updated_at TEXT
+);
 """
 
 MA_KEYS = ["25d", "75d", "200d", "75w", "200w", "75m", "200m"]
+FUND_COLS = ["fiscal_period", "appraisal_value", "book_value", "unrealized_gain",
+             "unrealized_gain_pct", "total_assets", "interest_bearing_debt", "ltv_pct",
+             "noi", "doc_id", "source", "parse_status"]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -100,6 +119,18 @@ def upsert_dividend(con, d: Dividend):
            pdf_sha256=excluded.pdf_sha256, parse_status=excluded.parse_status""",
         (d.code, d.period_label, d.report_date, d.total_distribution, d.excess_distribution,
          int(d.excess_present), d.excess_ratio_pct, d.pdf_url, d.pdf_sha256, d.parse_status),
+    )
+
+
+def upsert_fundamentals(con, f: dict, now: str):
+    """f は FUND_COLS のキーを持つ dict（欠損は None 可）。code 必須。"""
+    cols = ["code"] + FUND_COLS + ["updated_at"]
+    vals = [f.get("code")] + [f.get(k) for k in FUND_COLS] + [now]
+    sets = ", ".join(f"{c}=excluded.{c}" for c in FUND_COLS + ["updated_at"])
+    con.execute(
+        f"INSERT INTO fundamentals ({','.join(cols)}) VALUES ({','.join('?' * len(cols))}) "
+        f"ON CONFLICT(code) DO UPDATE SET {sets}",
+        vals,
     )
 
 

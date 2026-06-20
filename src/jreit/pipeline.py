@@ -1,6 +1,7 @@
 """ETLオーケストレーション。フィールド単位で例外を握り、NULLで継続（クラッシュさせない）。"""
 from __future__ import annotations
 import datetime as dt
+import os
 import uuid
 from .config import Config
 from .logging_conf import setup_logging
@@ -89,3 +90,33 @@ def run(codes: list[str], cfg: Config) -> dict:
     con.commit(); con.close()
     log.bind(run=run_id).info(f"FINISH succeeded={succeeded}/{len(codes)}")
     return {"run_id": run_id, "attempted": len(codes), "succeeded": succeeded}
+
+
+def run_edinet(codes: list[str], cfg: Config) -> dict:
+    """EDINETバッチ取込: 各REITのファンダ(含み損益/LTV/NOI等)を取得し fundamentals テーブルへ。"""
+    log = setup_logging(cfg.path("log"))
+    con = db.connect(cfg.path("db"))
+    client = HttpClient(cfg.net.get("user_agent", "jreit/0.1"),
+                        cfg.net.get("max_retries", 3),
+                        cfg.net.get("min_sleep_seconds", 2),
+                        cfg.net.get("timeout_seconds", 30))
+    key_env = cfg.dividends.get("edinet_api_key_env", "EDINET_API_KEY")
+    api_key = os.environ.get(key_env)
+    days_back = int(cfg.dividends.get("edinet_days_back", 400))
+    from .scrapers.edinet import fetch_fundamentals
+    if not api_key:
+        log.warning(f"EDINET: 環境変数 {key_env} が未設定 → no_key で記録（取得スキップ）")
+
+    ok = 0
+    for f in fetch_fundamentals(codes, client, api_key, days_back=days_back):
+        try:
+            db.upsert_fundamentals(con, f, _now())
+            con.commit()
+            if f.get("parse_status") in ("ok", "partial"):
+                ok += 1
+        except Exception as e:  # noqa
+            log.error(f"{f.get('code')}: fundamentals upsert error: {e}")
+    con.close()
+    status = "ok" if api_key else "no_key"
+    log.info(f"EDINET FINISH parsed={ok}/{len(codes)} status={status}")
+    return {"attempted": len(codes), "parsed": ok, "status": status}

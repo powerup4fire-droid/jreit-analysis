@@ -21,6 +21,7 @@ dividends:
   quarters: 10                   # 直近10期（REITは半期決算が主＝約5年）
   source: "edinet"               # edinet（有報/半期報告のXBRL, 永続・全期）
   edinet_api_key_env: "EDINET_API_KEY"   # キーは環境変数から読む（コード直書きしない）
+  edinet_days_back: 400          # EDINET取込で最新有報/半期を探す遡及日数（年1回開示に対応）
 
 paths:
   db: "data/jreit.db"

@@ -61,8 +61,21 @@ def load(table: str) -> pd.DataFrame:
     con = sqlite3.connect(DB)
     try:
         return pd.read_sql_query(f"SELECT * FROM {table}", con)
+    except Exception:           # テーブル未作成（古いDB）等は空で返す
+        return pd.DataFrame()
     finally:
         con.close()
+
+
+FUND_FIELDS = ["unrealized_gain", "unrealized_gain_pct", "ltv_pct", "noi",
+               "appraisal_value", "book_value", "total_assets", "fiscal_period"]
+
+
+def oku(v, dec=0, suf="億円"):
+    """円 → 億円表示。"""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    return f"{v / 1e8:,.{dec}f}{suf}"
 
 
 def fmt(v, dec=0, suf=""):
@@ -109,6 +122,19 @@ def build_frame():
     if reits.empty:
         return None, None, None, reits
     df = reits.merge(metrics, on="code", how="left", suffixes=("", "_m"))
+
+    # EDINET由来ファンダ（含み損益/LTV/NOI 等）。未取込・古いDBでも安全に NULL で継続。
+    fund = load("fundamentals")
+    if not fund.empty:
+        keep = ["code"] + [c for c in FUND_FIELDS if c in fund.columns]
+        ren = fund[keep].copy()
+        if "parse_status" in fund.columns:
+            ren["fund_status"] = fund["parse_status"]
+        df = df.merge(ren, on="code", how="left")
+    else:
+        for c in FUND_FIELDS:
+            df[c] = np.nan
+        df["fund_status"] = None
     uinfo = df.apply(use_info, axis=1)
     df["use_primary"] = uinfo.map(lambda x: x[0])
     df["use_label"] = uinfo.map(lambda x: x[1])
@@ -267,6 +293,15 @@ def render_detail(df, divs, code):
     m2[2].metric("6年平均乖離", fmt(row["dev_mean_6y_pct"], 1, "%"))
     m2[3].metric("6年中央乖離", fmt(row["dev_median_6y_pct"], 1, "%"))
 
+    # EDINET由来（含み損益/LTV/NOI）。未取込なら「—」。
+    m3 = st.columns(4)
+    m3[0].metric("含み損益", oku(row.get("unrealized_gain")))
+    m3[1].metric("含み益率", fmt(row.get("unrealized_gain_pct"), 1, "%"))
+    m3[2].metric("LTV", fmt(row.get("ltv_pct"), 1, "%"))
+    m3[3].metric("NOI", oku(row.get("noi")))
+    if str(row.get("fund_status")) == "no_key":
+        st.caption("含み損益/LTV/NOI は EDINET 未取込です（EDINET_API_KEY 設定後 `update_data.py --edinet` で反映）。")
+
     cL, cR = st.columns(2)
     with cL:
         st.markdown("**用途別ポートフォリオ構成**")
@@ -370,6 +405,12 @@ def render_comparison(df, divs):
         ("リーマン比 %", lambda c: rows[c]["lehman_ratio_pct"], "high"),
         ("年間分配金 円/口", lambda c: annual_distribution(divs, c)[0], "high"),
         ("利益超過(分配比)", excess_label, None),
+        ("含み益率 %", lambda c: rows[c].get("unrealized_gain_pct"), "high"),
+        ("LTV %", lambda c: rows[c].get("ltv_pct"), "low"),
+        ("含み損益 億円", lambda c: (rows[c].get("unrealized_gain") / 1e8
+                                if pd.notna(rows[c].get("unrealized_gain")) else None), "high"),
+        ("NOI 億円", lambda c: (rows[c].get("noi") / 1e8
+                              if pd.notna(rows[c].get("noi")) else None), "high"),
     ]
 
     headers = [f"{c} {rows[c]['name']}" for c in codes]
@@ -378,7 +419,8 @@ def render_comparison(df, divs):
     for label, acc, _ in specs:
         raw[label] = [acc(c) for c in codes]
     fmt_map = {"利回り %": 2, "価格 円": 0, "時価総額 億円": 0, "NAV倍率": 2, "物件数": 0,
-               "200日乖離 %": 1, "6年平均乖離 %": 1, "リーマン比 %": 1, "年間分配金 円/口": 0}
+               "200日乖離 %": 1, "6年平均乖離 %": 1, "リーマン比 %": 1, "年間分配金 円/口": 0,
+               "含み益率 %": 1, "LTV %": 1, "含み損益 億円": 0, "NOI 億円": 0}
     for label, _, good in specs:
         vals = raw[label]
         out = []
@@ -485,6 +527,7 @@ def render_portfolio(df, divs):
             "annual_excess": (excess_pu * units) if excess_pu is not None else None,
             "yield": rec["yield_total"], "use_primary": rec["use_primary"],
             "asset": {k: rec.get(k) for k in ASSET_COLS},
+            "fund_ug_pct": rec.get("unrealized_gain_pct"),
         })
     if not holds:
         st.info("有効な保有銘柄がありません（コードがDBに無い等）。")
@@ -550,6 +593,7 @@ def render_portfolio(df, divs):
             "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
             "評価額": fmt(h["value"], 0), "含み益": fmt(h["gain"], 0) if h["gain"] is not None else "—",
             "年間分配金": fmt(h["annual_income"], 0),
+            "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
         } for h in holds])
         st.dataframe(det, use_container_width=True, hide_index=True)
 
