@@ -383,10 +383,10 @@ def render_comparison(df, divs):
         vals = raw[label]
         out = []
         for v in vals:
-            if good is None:
+            if label in fmt_map:                       # 数値指標 → 桁区切り整形
+                out.append(fmt(v, fmt_map[label]))
+            else:                                       # 主用途/タイプ/利益超過 等の文字列
                 out.append("—" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v))
-            else:
-                out.append(fmt(v, fmt_map.get(label, 1)))
         disp[label] = out
 
     comp = pd.DataFrame(disp, index=headers).T  # index=指標, columns=銘柄
