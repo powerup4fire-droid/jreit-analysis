@@ -43,9 +43,14 @@ MA_KEYS = ["ma_25d", "ma_75d", "ma_200d", "ma_75w", "ma_200w", "ma_75m", "ma_200
 st.set_page_config(page_title="J-REIT 分析", page_icon="🏢", layout="wide",
                    initial_sidebar_state="collapsed")
 
-# multiselect のタグ（チップ）背景を白に統一（用途別の赤色を消す）
 st.markdown(
     """<style>
+    /* 上部の Streamlit ヘッダ（Share/star/edit/GitHub/⋮）を非表示にして余白も詰める */
+    header[data-testid="stHeader"]{display:none !important;}
+    [data-testid="stToolbar"]{display:none !important;}
+    [data-testid="stDecoration"]{display:none !important;}
+    .block-container, [data-testid="stMainBlockContainer"]{padding-top:1.2rem !important;}
+    /* multiselect のタグ（チップ）背景を白に統一 */
     span[data-baseweb="tag"]{background-color:#ffffff !important;border:1px solid #cbd5e1 !important;}
     span[data-baseweb="tag"] span{color:#1f2937 !important;}
     span[data-baseweb="tag"] svg{fill:#64748b !important;}
@@ -89,6 +94,41 @@ def jp_type(t) -> str:
     for en, ja in TYPE_JP.items():
         s = s.replace(en, ja)
     return s or "—"
+
+
+def derive_type(row) -> str:
+    """タイプを判定。明示ラベル(総合/複合/特化)は信頼してそのまま、
+    キーワード誤マッチの bare 値は資産内訳から再判定（例: 3249 office→複合）。"""
+    rt = str(row.get("reit_type") or "")
+    if "総合" in rt:
+        return "総合"
+    if "複合" in rt:
+        return "複合"
+    if "特化" in rt:
+        return jp_type(rt)
+    assets = {ja: row.get(col) for col, ja in ASSET_COLS.items()}
+    assets = {k: float(v) for k, v in assets.items() if pd.notna(v) and v > 0}
+    if not assets:
+        return jp_type(rt) if rt else "—"
+    nonother = {k: v for k, v in assets.items() if k != "その他"}
+    sig = [k for k, v in assets.items() if v >= 10]
+    if nonother:
+        nk = max(nonother, key=nonother.get)
+        if nonother[nk] >= 80:
+            return f"{nk}特化"
+    if len(sig) >= 3:
+        return "総合"
+    if len(sig) == 2:
+        return "複合"
+    if len(sig) == 1:
+        return f"{sig[0]}特化" if sig[0] != "その他" else "その他"
+    return "—"
+
+
+def is_infra(df: pd.DataFrame) -> pd.Series:
+    """インフラファンド判定（名前パターン or コード 928x）。"""
+    name = df["name"].fillna("")
+    return name.str.contains("インフラ|再生可能|ソーラー|エネルギー") | df["code"].astype(str).str.startswith("928")
 
 
 def use_info(row) -> tuple[str, str]:
@@ -138,7 +178,7 @@ def build_frame():
     uinfo = df.apply(use_info, axis=1)
     df["use_primary"] = uinfo.map(lambda x: x[0])
     df["use_label"] = uinfo.map(lambda x: x[1])
-    df["type_jp"] = df["reit_type"].map(jp_type)
+    df["type_jp"] = df.apply(derive_type, axis=1)
     df["mktcap_oku"] = df["market_cap"] / 1e8
     df["dev_200d_pct"] = np.where(df["ma_200d"].notna() & df["latest_price"].notna() & (df["ma_200d"] != 0),
                                   (df["latest_price"] - df["ma_200d"]) / df["ma_200d"] * 100, np.nan)
@@ -189,12 +229,25 @@ def annual_distribution(divs, code):
 # ===========================================================================
 def render_dashboard(df, divs):
     st.subheader("📋 サマリ")
-    c1, c2, c3 = st.columns([2, 2, 1])
     uses = sorted(df["use_primary"].dropna().unique().tolist())
-    pick = c1.multiselect("主用途で絞り込み", uses, default=uses)
-    only_no_excess = c2.checkbox("利益超過分配金なしのみ", value=False,
-                                 help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
-    sort_key = c3.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%", "時価総額"])
+    left, right = st.columns([1, 3])
+    with left:
+        sort_key = st.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%", "時価総額"])
+        only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
+                                     help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
+    with right:
+        pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
+                        default=uses)
+        ex = df[~is_infra(df)]
+        avg = ex["yield_total"].mean()
+        st.markdown(
+            f'<div style="background:#eef3fb;border-radius:8px;padding:8px 14px;display:inline-block;margin-top:4px">'
+            f'📊 J-REIT全体 平均利回り（インフラファンド除く・{len(ex)}銘柄）: '
+            f'<b style="font-size:1.15em;color:#1b4079">{avg:.2f}%</b></div>',
+            unsafe_allow_html=True)
+    if not pick:
+        st.info("主用途を1つ以上選択してください（ボタンをクリックでON）。")
+        return
 
     view = df[df["use_primary"].isin(pick)].copy()
     if only_no_excess:
@@ -612,8 +665,9 @@ def main():
         last = runs.sort_values("finished_at").iloc[-1]
         st.caption(f"最終更新 {last.get('finished_at','?')} ・ 銘柄 {len(reits)} ・ キャッシュ参照のみ")
 
-    page = st.radio("画面", ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"],
-                    horizontal=True, label_visibility="collapsed")
+    pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
+    page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
+    page = page or pages[0]
     st.divider()
     if page == "📋 ダッシュボード":
         render_dashboard(df, divs)
