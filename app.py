@@ -168,7 +168,13 @@ def main():
         s[i_type] = f"background-color:{tb};color:{tf};font-weight:600"
         return s
 
-    st.dataframe(summary.style.apply(color_row, axis=1), use_container_width=True, hide_index=True, height=460)
+    num_fmt = {
+        "利回り%": "{:.2f}", "価格": "{:,.0f}", "出来高": "{:,.0f}",
+        "時価総額(億円)": "{:,.0f}", "NAV倍率": "{:.2f}",
+        "200日乖離%": "{:+.1f}", "6年平均乖離%": "{:+.1f}", "リーマン比%": "{:.1f}",
+    }
+    styled = summary.style.apply(color_row, axis=1).format(num_fmt, na_rep="—")
+    st.dataframe(styled, use_container_width=True, hide_index=True, height=460)
     legend = "　".join(
         f'<span style="background:{c[0]};color:{c[1]};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
         for k, c in ASSET_STYLE.items())
