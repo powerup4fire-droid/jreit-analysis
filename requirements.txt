@@ -1,0 +1,5 @@
+# Streamlit Community Cloud 用（ダッシュボード app.py の実行に必要な最小依存）
+# ※データ取得パイプライン(update_data.py)の依存は pyproject.toml 側
+streamlit>=1.32
+pandas>=2.2
+numpy>=1.26

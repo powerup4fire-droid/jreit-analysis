@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# 生キャッシュ（再取得可・サイズ大）は配布不要。DB本体は配布する（cached-first）
+data/cache/
+data/logs/
+# data/jreit.db は コミットする（ホスト側はこれを read-only 参照）
+*.db-wal
+*.db-shm

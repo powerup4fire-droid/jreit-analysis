@@ -1,0 +1,32 @@
+# J-REIT analysis 設定
+# 初回検証はこの3銘柄のみ（全銘柄スクレイプは明示フラグでのみ）
+validation_codes:
+  - "8985"   # ジャパン・ホテル・リート投資法人
+  - "8960"   # ユナイテッド・アーバン投資法人
+  - "8963"   # インヴィンシブル投資法人
+
+network:
+  user_agent: "jreit-analysis/0.1 (research; contact: local)"
+  max_retries: 3
+  min_sleep_seconds: 2          # 各リクエスト後の最小待機
+  timeout_seconds: 30
+
+stock:
+  history_period: "max"          # yfinance取得期間（最大）
+  deviation_years: 6             # 6年平均/中央値乖離
+  lehman_start: "2008-09-01"
+  lehman_end: "2009-03-31"
+
+dividends:
+  quarters: 10                   # 直近10期（REITは半期決算が主＝約5年）
+  source: "edinet"               # edinet（有報/半期報告のXBRL, 永続・全期）
+  edinet_api_key_env: "EDINET_API_KEY"   # キーは環境変数から読む（コード直書きしない）
+
+paths:
+  db: "data/jreit.db"
+  price_cache: "data/cache/prices"
+  pdf_cache: "data/cache/pdfs"
+  log: "data/logs/pipeline.log"
+
+sources:
+  japan_reit_base: "https://www.japan-reit.com/meigara/"
