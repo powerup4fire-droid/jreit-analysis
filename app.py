@@ -308,14 +308,7 @@ def render_dashboard(df, divs):
             return cols[0]
         return "linear-gradient(90deg, " + ", ".join(cols) + ")"
 
-    def color_row(row):
-        s = [""] * len(row)
-        s[i_use] = f"background:{use_bg(types_list.iloc[row.name])};color:{FONT};font-weight:700"
-        tb, _ = type_style(row["タイプ"])      # タイプは「総合/複合」=グレー, 特化=用途色
-        s[i_type] = f"background-color:{tb};color:{FONT};font-weight:700"
-        return s
-
-    # st.dataframe(Styler) は na_rep を無視するため、数値列を文字列へ整形して NA を「—」にする
+    # 数値列を文字列へ整形（NA は「—」）
     num_fmt = {
         "利回り%": "{:.2f}", "価格": "{:,.0f}", "出来高": "{:,.0f}",
         "時価総額(億円)": "{:,.0f}", "NAV倍率": "{:.2f}",
@@ -323,28 +316,49 @@ def render_dashboard(df, divs):
     }
     for c, spec in num_fmt.items():
         summary[c] = summary[c].map(lambda v, s=spec: "—" if pd.isna(v) else s.format(v))
-    styled = summary.style.apply(color_row, axis=1).set_properties(**{"color": FONT})
 
-    st.caption("行をクリックすると下の「個別銘柄」に自動表示されます。")
-    event = st.dataframe(
-        styled, use_container_width=True, hide_index=True, height=460,
-        on_select="rerun", selection_mode="single-row", key="summary_tbl",
-        column_config={
-            "主用途": st.column_config.TextColumn("主用途", width="medium"),
-            "スポンサー": st.column_config.TextColumn("スポンサー", width="medium"),
-            "ｽﾎﾟﾝｻｰ変更": st.column_config.TextColumn("ｽﾎﾟﾝｻｰ変更", help="上場以来のスポンサー変更: あり○ / なし✕（自動判定・要確認）"),
-            "上場期": st.column_config.TextColumn("上場期", help="現在の決算期（第N期）"),
-        })
-    sel = event.selection.rows if event and event.selection else []
-    if sel:
-        st.session_state["detail_code"] = summary.iloc[sel[0]]["コード"]
+    # st.dataframe(canvas) は CSS グラデーション背景を描画できないため、HTMLテーブルで描画する。
+    cols = list(summary.columns)
+    right_cols = {"利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
+                  "200日乖離%", "6年平均乖離%", "リーマン比%"}
+    center_cols = {"タイプ", "上場期", "ｽﾎﾟﾝｻｰ変更", "利益超過(6期)", "利益超過(10期)"}
+    head = "".join(
+        f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
+        f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
+        for c in cols)
+    rows_html = []
+    for i in range(len(summary)):
+        r = summary.iloc[i]
+        tds = []
+        for c in cols:
+            v = r[c]
+            if c == "主用途":
+                tds.append(
+                    f'<td style="background:{use_bg(types_list.iloc[i])};color:{FONT};font-weight:700;'
+                    f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+            elif c == "タイプ":
+                tb, _ = type_style(v)
+                tds.append(
+                    f'<td style="background:{tb};color:{FONT};font-weight:700;text-align:center;'
+                    f'white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+            else:
+                align = "right" if c in right_cols else ("center" if c in center_cols else "left")
+                tds.append(
+                    f'<td style="color:{FONT};text-align:{align};white-space:nowrap;'
+                    f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+        rows_html.append("<tr>" + "".join(tds) + "</tr>")
+    table_html = (
+        '<div style="max-height:460px;overflow:auto;border:1px solid #e0e0e0;border-radius:8px">'
+        '<table style="border-collapse:collapse;font-size:13px;width:100%">'
+        f'<thead><tr>{head}</tr></thead><tbody>{"".join(rows_html)}</tbody></table></div>')
+    st.markdown(table_html, unsafe_allow_html=True)
 
     legend = "　".join(
         f'<span style="background:{c};color:{FONT};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
         for k, c in ASSET_COLOR.items())
-    st.markdown("セルの用途色: " + legend, unsafe_allow_html=True)
+    st.markdown("セルの用途色（複数用途はグラデーション）: " + legend, unsafe_allow_html=True)
     st.caption("※ スポンサー・上場期・変更有無は japan-reit.com からの自動取得（変更有無は説明文ベースの推定で見落とし得ます）")
-    st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄")
+    st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄　／　詳細は下の「個別銘柄」で選択")
 
     # ===== 個別 =====
     st.subheader("🔎 個別銘柄")
