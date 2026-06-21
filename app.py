@@ -408,14 +408,18 @@ def render_detail(df, divs, code):
         st.line_chart(plot.set_index("period_label")[["total_distribution", "excess_distribution"]])
 
 
-def donut_chart(amap: dict, height=300):
+def donut_chart(amap: dict, height=300, legend=True):
     order = list(PIE_COLORS.keys())
     pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
-    donut = alt.Chart(pdf).mark_arc(innerRadius=55).encode(
+    # 外半径を高さ基準で固定（列幅が狭くてもリングが潰れない）。凡例ぶんの余白も確保。
+    outer = max(40.0, height / 2 - 12)
+    inner = outer * 0.55
+    leg = alt.Legend(title=None) if legend else None
+    donut = alt.Chart(pdf).mark_arc(innerRadius=inner, outerRadius=outer).encode(
         theta=alt.Theta("比率:Q", stack=True),
         color=alt.Color("用途:N",
                         scale=alt.Scale(domain=order, range=[PIE_COLORS[k] for k in order]),
-                        legend=alt.Legend(title=None)),
+                        legend=leg),
         order=alt.Order("比率:Q", sort="descending"),
         tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")],
     ).properties(height=height)
@@ -536,7 +540,9 @@ def render_comparison(df, divs):
             amap = {ja: float(rows[c][k]) for k, ja in ASSET_COLS.items()
                     if pd.notna(rows[c].get(k)) and rows[c].get(k)}
             if amap:
-                donut_chart(amap, height=200)
+                donut_chart(amap, height=200, legend=False)
+                top = sorted(amap.items(), key=lambda x: -x[1])[:3]
+                st.caption("　".join(f"{k} {v:.0f}%" for k, v in top))
             else:
                 st.caption("構成データなし")
 
