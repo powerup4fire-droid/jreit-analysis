@@ -8,6 +8,7 @@ SQLite(data/jreit.db) のみ参照。スマホ/PC両対応。起動: streamlit r
 """
 from __future__ import annotations
 import datetime as dt
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -52,6 +53,14 @@ st.markdown(
     span[data-baseweb="tag"]{background-color:#ffffff !important;border:1px solid #cbd5e1 !important;}
     span[data-baseweb="tag"] span{color:#1f2937 !important;}
     span[data-baseweb="tag"] svg{fill:#64748b !important;}
+    /* ヘッダ周りの余白を引き締める */
+    h1{margin-bottom:.1rem !important;padding-top:0 !important;letter-spacing:.5px;}
+    hr{margin:.5rem 0 1.1rem !important;}
+    /* 画面切替（segmented control）を見やすく */
+    div[data-testid="stButtonGroup"]{margin-top:.2rem;}
+    div[data-testid="stButtonGroup"] button{font-weight:700;}
+    /* サブヘッダの上余白を少し詰める */
+    h2, h3{margin-top:.4rem !important;}
     </style>""",
     unsafe_allow_html=True,
 )
@@ -157,11 +166,34 @@ def period_key(label):
 # ---------------------------------------------------------------------------
 # 共通: データフレーム整形
 # ---------------------------------------------------------------------------
+def load_overrides() -> dict:
+    """data/overrides.json で reits 列を銘柄ごとに手動上書き（スポンサー変更有無など）。"""
+    p = DB.parent / "overrides.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return {k: v for k, v in data.items() if k.isdigit() and isinstance(v, dict)}
+    except Exception:
+        return {}
+
+
 def build_frame():
     reits, metrics, divs, runs = load("reits"), load("stock_metrics"), load("dividends"), load("scrape_runs")
     if reits.empty:
         return None, None, None, reits
     df = reits.merge(metrics, on="code", how="left", suffixes=("", "_m"))
+
+    # 手動上書き（overrides.json）を反映 — スクレイプ値より優先
+    ov = load_overrides()
+    if ov:
+        df = df.set_index("code")
+        for code, fields in ov.items():
+            if code in df.index:
+                for k, val in fields.items():
+                    if k in df.columns:
+                        df.at[code, k] = val
+        df = df.reset_index()
 
     # EDINET由来ファンダ（含み損益/LTV/NOI 等）。未取込・古いDBでも安全に NULL で継続。
     fund = load("fundamentals")
@@ -233,7 +265,8 @@ def render_dashboard(df, divs):
     uses = sorted(df["use_primary"].dropna().unique().tolist())
     c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
     with c_sort:
-        sort_key = st.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%", "時価総額"])
+        sort_key = st.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%",
+                                          "時価総額", "出来高", "コードNo"])
     with c_pick:
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
                         default=uses)
@@ -279,13 +312,16 @@ def render_dashboard(df, divs):
         "リーマン比%": view["lehman_ratio_pct"].round(1),
         "利益超過(6期)": view["exc6"].map(yn), "利益超過(10期)": view["exc10"].map(yn),
         "_primary": view["use_primary"], "_types": view["use_types"],
+        "_assets": view.apply(lambda r: {ja: r.get(col) for col, ja in ASSET_COLS.items()}, axis=1),
     })
     sort_map = {"利回り%": ("利回り%", False), "6年平均乖離%": ("6年平均乖離%", True),
-                "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False)}
+                "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False),
+                "出来高": ("出来高", False), "コードNo": ("コード", True)}
     col, asc = sort_map[sort_key]
     summary = summary.sort_values(col, ascending=asc, na_position="last").reset_index(drop=True)
     primaries = summary.pop("_primary")
     types_list = summary.pop("_types")
+    assets_list = summary.pop("_assets")
 
     cols = list(summary.columns)
     i_use, i_type = cols.index("主用途"), cols.index("タイプ")
@@ -299,14 +335,22 @@ def render_dashboard(df, divs):
                 return ASSET_STYLE[ja]
         return ASSET_STYLE["その他"]
 
-    def use_bg(types):
-        """主用途セルの背景。複数用途は各色のグラデーション。"""
-        cols = [ASSET_COLOR[t] for t in (types or []) if t in ASSET_COLOR]
-        if not cols:
+    def use_bg(assets):
+        """主用途セルの背景。運用比率に応じてセル内を帯状に色分け（多い順に左→右、ハードストップ）。"""
+        items = [(t, float(p)) for t, p in (assets or {}).items()
+                 if pd.notna(p) and float(p) > 0 and t in ASSET_COLOR]
+        if not items:
             return ASSET_COLOR["その他"]
-        if len(cols) == 1:
-            return cols[0]
-        return "linear-gradient(90deg, " + ", ".join(cols) + ")"
+        items.sort(key=lambda x: -x[1])
+        total = sum(p for _, p in items) or 1.0
+        cum = 0.0
+        stops = []
+        for t, p in items:
+            a = cum / total * 100
+            cum += p
+            b = cum / total * 100
+            stops.append(f"{ASSET_COLOR[t]} {a:.2f}% {b:.2f}%")   # 同色2点でハードな帯（グラデなし）
+        return "linear-gradient(90deg, " + ", ".join(stops) + ")"
 
     # 数値列を文字列へ整形（NA は「—」）
     num_fmt = {
@@ -334,7 +378,7 @@ def render_dashboard(df, divs):
             v = r[c]
             if c == "主用途":
                 tds.append(
-                    f'<td style="background:{use_bg(types_list.iloc[i])};color:{FONT};font-weight:700;'
+                    f'<td style="background:{use_bg(assets_list.iloc[i])};color:{FONT};font-weight:700;'
                     f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
             elif c == "タイプ":
                 tb, _ = type_style(v)
@@ -356,7 +400,7 @@ def render_dashboard(df, divs):
     legend = "　".join(
         f'<span style="background:{c};color:{FONT};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
         for k, c in ASSET_COLOR.items())
-    st.markdown("セルの用途色（複数用途はグラデーション）: " + legend, unsafe_allow_html=True)
+    st.markdown("主用途セルは運用比率で色分け（多い順に左→右）: " + legend, unsafe_allow_html=True)
     st.caption("※ スポンサー・上場期・変更有無は japan-reit.com からの自動取得（変更有無は説明文ベースの推定で見落とし得ます）")
     st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄　／　詳細は下の「個別銘柄」で選択")
 
@@ -718,15 +762,24 @@ def render_portfolio(df, divs):
 # エントリ
 # ===========================================================================
 def main():
-    st.title("🏢 J-REIT 分析ダッシュボード")
     if not DB.exists():
+        st.title("🏢 J-REIT 分析ダッシュボード")
         st.error("data/jreit.db がありません。"); return
     df, divs, runs, reits = build_frame()
     if df is None:
+        st.title("🏢 J-REIT 分析ダッシュボード")
         st.warning("データが空です。"); return
+
+    ts = "—"
     if runs is not None and not runs.empty:
-        last = runs.sort_values("finished_at").iloc[-1]
-        st.caption(f"最終更新 {last.get('finished_at','?')} ・ 銘柄 {len(reits)} ・ キャッシュ参照のみ")
+        ts = runs.sort_values("finished_at").iloc[-1].get("finished_at", "—")
+    # タイトル＋メタ情報を1行のヘッダにまとめて余白を最適化
+    st.markdown(
+        '<div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;'
+        'margin:0 0 6px">'
+        '<span style="font-size:2rem;font-weight:800;color:#1f2937">🏢 J-REIT 分析ダッシュボード</span>'
+        f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
+        '</div>', unsafe_allow_html=True)
 
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
     page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")

@@ -1,0 +1,4 @@
+{
+  "_comment": "銘柄コード(4桁)ごとに reits 列を手動上書きします。スクレイプ値より優先されます。編集して git commit/push すると次回デプロイで反映。指定できる主な列: sponsor(文字列), sponsor_changed(0=変更なし/1=変更あり), period_no(整数), name, reit_type, asset_office/asset_residential/asset_logistics/asset_retail/asset_hotel/asset_healthcare/asset_other(数値%)。",
+  "_example": {"8960": {"sponsor": "丸紅・第一生命", "sponsor_changed": 1}}
+}
