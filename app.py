@@ -22,19 +22,17 @@ ASSET_COLS = {
     "asset_retail": "商業", "asset_hotel": "ホテル", "asset_healthcare": "ヘルスケア",
     "asset_other": "その他",
 }
-# 主用途/タイプのセル着色（色で判別）
-ASSET_STYLE = {
-    "オフィス": ("#1b5e20", "white"), "ホテル": ("#b71c1c", "white"),
-    "物流": ("#6fa8dc", "#0b2545"), "商業": ("#e6a817", "#3a2a00"),
-    "住居": ("#9bbb59", "#1f2d0a"), "ヘルスケア": ("#1a4f8a", "white"),
-    "その他": ("#9e9e9e", "white"),
+# 用途カラー（サマリのセル・円グラフで共通。文字は全て黒のため、黒が読める明度に統一）
+ASSET_COLOR = {
+    "オフィス": "#7cb87c", "住居": "#b9cf66", "物流": "#8fc1e3",
+    "商業": "#f0c14b", "ホテル": "#ef9a9a", "ヘルスケア": "#a6b8e6",
+    "その他": "#cfd4d8",
 }
-# 円グラフ配色（japan-reit.com 準拠）
-PIE_COLORS = {
-    "オフィス": "#5b7fc7", "住居": "#d6749a", "商業": "#b03a48",
-    "ホテル": "#de5b52", "物流": "#e8923a", "その他": "#ecc94b",
-    "ヘルスケア": "#5aa06a",
-}
+FONT = "#111111"   # フォントは全て黒で統一
+# 後方互換: (bg, fg) 形式で参照する箇所向け（fgは常に黒）
+ASSET_STYLE = {k: (v, FONT) for k, v in ASSET_COLOR.items()}
+# 円グラフもサマリと同じ用途カラーに統一
+PIE_COLORS = ASSET_COLOR
 # reit_type 内の英語表記 → 日本語
 TYPE_JP = {"office": "オフィス", "residential": "住居", "logistics": "物流",
            "retail": "商業", "hotel": "ホテル", "healthcare": "ヘルスケア"}
@@ -131,22 +129,24 @@ def is_infra(df: pd.DataFrame) -> pd.Series:
     return name.str.contains("インフラ|再生可能|ソーラー|エネルギー") | df["code"].astype(str).str.startswith("928")
 
 
-def use_info(row) -> tuple[str, str]:
-    """(色用の主用途1つ, 表示ラベル) を返す。
+def use_info(row) -> tuple[str, str, list[str]]:
+    """(色用の主用途1つ, 表示ラベル, 併記用途リスト) を返す。
     - その他は主用途に使わない。ヘルスケアは『ヘルスケア』表記。
-    - 最大用途を採用。トップとの差が5%以内の用途は併記（例: オフィス・住居）。"""
+    - 最大用途を採用。トップとの差が5%以内の用途は併記（例: オフィス・住居）。
+    - 併記リストは主用途セルのグラデーション着色に使う。"""
     rt, nm = str(row.get("reit_type") or ""), str(row.get("name") or "")
     if "healthcare" in rt or "ヘルスケア" in rt or "ヘルスケア" in nm:
-        return "ヘルスケア", "ヘルスケア"
+        return "ヘルスケア", "ヘルスケア", ["ヘルスケア"]
     pcts = {ja: row.get(col) for col, ja in ASSET_COLS.items() if ja != "その他"}
     pcts = {k: float(v) for k, v in pcts.items() if pd.notna(v) and v > 0}
     if not pcts:
         lbl = jp_type(rt)
-        return "その他", (lbl if lbl != "—" else "その他")
+        u = lbl if lbl != "—" else "その他"
+        return "その他", u, [u]
     ranked = sorted(pcts.items(), key=lambda x: -x[1])
     top = ranked[0][1]
     near = [k for k, v in ranked if top - v <= 5.0]
-    return ranked[0][0], "・".join(near)
+    return ranked[0][0], "・".join(near), near
 
 
 def period_key(label):
@@ -178,6 +178,7 @@ def build_frame():
     uinfo = df.apply(use_info, axis=1)
     df["use_primary"] = uinfo.map(lambda x: x[0])
     df["use_label"] = uinfo.map(lambda x: x[1])
+    df["use_types"] = uinfo.map(lambda x: x[2])
     df["type_jp"] = df.apply(derive_type, axis=1)
     df["mktcap_oku"] = df["market_cap"] / 1e8
     df["dev_200d_pct"] = np.where(df["ma_200d"].notna() & df["latest_price"].notna() & (df["ma_200d"] != 0),
@@ -230,20 +231,22 @@ def annual_distribution(divs, code):
 def render_dashboard(df, divs):
     st.subheader("📋 サマリ")
     uses = sorted(df["use_primary"].dropna().unique().tolist())
-    left, right = st.columns([1, 3])
-    with left:
+    c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
+    with c_sort:
         sort_key = st.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%", "時価総額"])
-        only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
-                                     help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
-    with right:
+    with c_pick:
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
                         default=uses)
+        only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
+                                     help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
+    with c_avg:
         ex = df[~is_infra(df)]
         avg = ex["yield_total"].mean()
         st.markdown(
-            f'<div style="background:#eef3fb;border-radius:8px;padding:8px 14px;display:inline-block;margin-top:4px">'
-            f'📊 J-REIT全体 平均利回り（インフラファンド除く・{len(ex)}銘柄）: '
-            f'<b style="font-size:1.15em;color:#1b4079">{avg:.2f}%</b></div>',
+            f'<div style="background:#eef3fb;border-radius:10px;padding:12px 16px;text-align:center;margin-top:26px">'
+            f'<div style="font-size:13px;color:#111">📊 J-REIT全体 平均利回り<br>'
+            f'<span style="font-size:11px;color:#555">（インフラファンド除く・{len(ex)}銘柄）</span></div>'
+            f'<div style="font-size:1.7em;font-weight:700;color:#111;margin-top:2px">{avg:.2f}%</div></div>',
             unsafe_allow_html=True)
     if not pick:
         st.info("主用途を1つ以上選択してください（ボタンをクリックでON）。")
@@ -256,21 +259,33 @@ def render_dashboard(df, divs):
     def yn(v):
         return "✓" if v is True else ("—" if v is None else "")
 
+    def period_disp(v):
+        return f"{int(v)}期" if pd.notna(v) else "—"
+
+    def changed_disp(v):
+        return "○" if v == 1 else "✕"   # 上場以来のスポンサー変更: あり○ / なし✕
+
+    g = lambda c: view[c] if c in view.columns else pd.Series([None] * len(view), index=view.index)
     summary = pd.DataFrame({
         "コード": view["code"], "名称": view["name"], "主用途": view["use_label"],
-        "タイプ": view["type_jp"], "利回り%": view["yield_total"].round(2),
+        "タイプ": view["type_jp"], "上場期": g("period_no").map(period_disp),
+        "利回り%": view["yield_total"].round(2),
         "価格": view["latest_price"], "出来高": view["volume"],
-        "時価総額(億円)": view["mktcap_oku"].round(0), "NAV倍率": view["nav_ratio"].round(2),
+        "時価総額(億円)": view["mktcap_oku"].round(0),
+        "スポンサー": g("sponsor").fillna("—"),
+        "ｽﾎﾟﾝｻｰ変更": g("sponsor_changed").map(changed_disp),
+        "NAV倍率": view["nav_ratio"].round(2),
         "200日乖離%": view["dev_200d_pct"].round(1), "6年平均乖離%": view["dev_mean_6y_pct"].round(1),
         "リーマン比%": view["lehman_ratio_pct"].round(1),
         "利益超過(6期)": view["exc6"].map(yn), "利益超過(10期)": view["exc10"].map(yn),
-        "_primary": view["use_primary"],
+        "_primary": view["use_primary"], "_types": view["use_types"],
     })
     sort_map = {"利回り%": ("利回り%", False), "6年平均乖離%": ("6年平均乖離%", True),
                 "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False)}
     col, asc = sort_map[sort_key]
     summary = summary.sort_values(col, ascending=asc, na_position="last").reset_index(drop=True)
     primaries = summary.pop("_primary")
+    types_list = summary.pop("_types")
 
     cols = list(summary.columns)
     i_use, i_type = cols.index("主用途"), cols.index("タイプ")
@@ -284,13 +299,20 @@ def render_dashboard(df, divs):
                 return ASSET_STYLE[ja]
         return ASSET_STYLE["その他"]
 
+    def use_bg(types):
+        """主用途セルの背景。複数用途は各色のグラデーション。"""
+        cols = [ASSET_COLOR[t] for t in (types or []) if t in ASSET_COLOR]
+        if not cols:
+            return ASSET_COLOR["その他"]
+        if len(cols) == 1:
+            return cols[0]
+        return "linear-gradient(90deg, " + ", ".join(cols) + ")"
+
     def color_row(row):
         s = [""] * len(row)
-        bg, fg = ASSET_STYLE.get(primaries.iloc[row.name], ("", ""))
-        if bg:
-            s[i_use] = f"background-color:{bg};color:{fg};font-weight:600"
-        tb, tf = type_style(row["タイプ"])      # タイプは「総合/複合」=グレー, 特化=用途色
-        s[i_type] = f"background-color:{tb};color:{tf};font-weight:600"
+        s[i_use] = f"background:{use_bg(types_list.iloc[row.name])};color:{FONT};font-weight:700"
+        tb, _ = type_style(row["タイプ"])      # タイプは「総合/複合」=グレー, 特化=用途色
+        s[i_type] = f"background-color:{tb};color:{FONT};font-weight:700"
         return s
 
     # st.dataframe(Styler) は na_rep を無視するため、数値列を文字列へ整形して NA を「—」にする
@@ -301,19 +323,27 @@ def render_dashboard(df, divs):
     }
     for c, spec in num_fmt.items():
         summary[c] = summary[c].map(lambda v, s=spec: "—" if pd.isna(v) else s.format(v))
-    styled = summary.style.apply(color_row, axis=1)
+    styled = summary.style.apply(color_row, axis=1).set_properties(**{"color": FONT})
 
     st.caption("行をクリックすると下の「個別銘柄」に自動表示されます。")
-    event = st.dataframe(styled, use_container_width=True, hide_index=True, height=460,
-                         on_select="rerun", selection_mode="single-row", key="summary_tbl")
+    event = st.dataframe(
+        styled, use_container_width=True, hide_index=True, height=460,
+        on_select="rerun", selection_mode="single-row", key="summary_tbl",
+        column_config={
+            "主用途": st.column_config.TextColumn("主用途", width="medium"),
+            "スポンサー": st.column_config.TextColumn("スポンサー", width="medium"),
+            "ｽﾎﾟﾝｻｰ変更": st.column_config.TextColumn("ｽﾎﾟﾝｻｰ変更", help="上場以来のスポンサー変更: あり○ / なし✕（自動判定・要確認）"),
+            "上場期": st.column_config.TextColumn("上場期", help="現在の決算期（第N期）"),
+        })
     sel = event.selection.rows if event and event.selection else []
     if sel:
         st.session_state["detail_code"] = summary.iloc[sel[0]]["コード"]
 
     legend = "　".join(
-        f'<span style="background:{c[0]};color:{c[1]};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
-        for k, c in ASSET_STYLE.items())
+        f'<span style="background:{c};color:{FONT};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
+        for k, c in ASSET_COLOR.items())
     st.markdown("セルの用途色: " + legend, unsafe_allow_html=True)
+    st.caption("※ スポンサー・上場期・変更有無は japan-reit.com からの自動取得（変更有無は説明文ベースの推定で見落とし得ます）")
     st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄")
 
     # ===== 個別 =====
@@ -334,6 +364,12 @@ def render_detail(df, divs, code):
         f'**{row["name"]}**（{code}）　'
         f'<span style="background:{bg};color:{fg};padding:2px 10px;border-radius:6px">'
         f'{row["use_label"]} / {row["type_jp"]}</span>', unsafe_allow_html=True)
+    per = row.get("period_no")
+    sp = row.get("sponsor")
+    chg = "○" if row.get("sponsor_changed") == 1 else "✕"
+    per_s = f"{int(per)}期" if pd.notna(per) else "—"
+    sp_s = sp if (sp and pd.notna(sp)) else "—"
+    st.caption(f"上場期: {per_s}　／　スポンサー: {sp_s}　／　スポンサー変更: {chg}")
 
     m = st.columns(4)
     m[0].metric("価格", fmt(row["latest_price"]))
@@ -408,22 +444,29 @@ def render_detail(df, divs, code):
         st.line_chart(plot.set_index("period_label")[["total_distribution", "excess_distribution"]])
 
 
-def donut_chart(amap: dict, height=300, legend=True):
+def donut_chart(amap: dict, height=300, legend=True, inside_labels=False):
     order = list(PIE_COLORS.keys())
     pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
+    pdf["ラベル"] = pdf["比率"].map(lambda v: f"{v:.0f}%" if v >= 7 else "")  # 小さいスライスは省略
     # 外半径を高さ基準で固定（列幅が狭くてもリングが潰れない）。凡例ぶんの余白も確保。
     outer = max(40.0, height / 2 - 12)
     inner = outer * 0.55
     leg = alt.Legend(title=None) if legend else None
-    donut = alt.Chart(pdf).mark_arc(innerRadius=inner, outerRadius=outer).encode(
+    base = alt.Chart(pdf).encode(
         theta=alt.Theta("比率:Q", stack=True),
+        order=alt.Order("比率:Q", sort="descending"))
+    arc = base.mark_arc(innerRadius=inner, outerRadius=outer).encode(
         color=alt.Color("用途:N",
                         scale=alt.Scale(domain=order, range=[PIE_COLORS[k] for k in order]),
                         legend=leg),
-        order=alt.Order("比率:Q", sort="descending"),
-        tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")],
-    ).properties(height=height)
-    st.altair_chart(donut, use_container_width=True)
+        tooltip=[alt.Tooltip("用途:N"), alt.Tooltip("比率:Q", format=".1f")])
+    layers = [arc]
+    if inside_labels:
+        # 構成比率を着色エリア内に黒文字で表記
+        txt = base.mark_text(radius=(inner + outer) / 2, fontSize=12, fontWeight="bold",
+                             fill="#111111").encode(text=alt.Text("ラベル:N"))
+        layers.append(txt)
+    st.altair_chart(alt.layer(*layers).properties(height=height), use_container_width=True)
 
 
 # ===========================================================================
@@ -527,11 +570,11 @@ def render_comparison(df, divs):
             out.append(f"background-color:{bgfg[0]};color:{bgfg[1]};font-weight:600" if bgfg[0] else "")
         return out
 
-    styled = comp.style.apply(hl, axis=1).apply(color_use, axis=1)
-    st.dataframe(styled, use_container_width=True, height=460)
+    styled = comp.style.apply(hl, axis=1).apply(color_use, axis=1).set_properties(**{"color": FONT})
+    st.dataframe(styled, use_container_width=True, height=520)
     st.caption("黄色 = その指標のベスト値（利回り/物件数/リーマン比は高い方、NAV倍率/乖離は低い方）。")
 
-    # 用途構成を並べて表示
+    # 用途構成を並べて表示（構成比率は円グラフ内に表記）
     st.markdown("**用途別構成**")
     pcols = st.columns(len(codes))
     for col, c in zip(pcols, codes):
@@ -540,9 +583,9 @@ def render_comparison(df, divs):
             amap = {ja: float(rows[c][k]) for k, ja in ASSET_COLS.items()
                     if pd.notna(rows[c].get(k)) and rows[c].get(k)}
             if amap:
-                donut_chart(amap, height=200, legend=False)
+                donut_chart(amap, height=210, legend=False, inside_labels=True)
                 top = sorted(amap.items(), key=lambda x: -x[1])[:3]
-                st.caption("　".join(f"{k} {v:.0f}%" for k, v in top))
+                st.caption("　".join(k for k, _ in top))   # 用途名（比率は円内に表示）
             else:
                 st.caption("構成データなし")
 
