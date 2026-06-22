@@ -1,4 +1,11 @@
 {
-  "_comment": "銘柄コード(4桁)ごとに reits 列を手動上書きします。スクレイプ値より優先されます。編集して git commit/push すると次回デプロイで反映。指定できる主な列: sponsor(文字列), sponsor_changed(0=変更なし/1=変更あり), period_no(整数), name, reit_type, asset_office/asset_residential/asset_logistics/asset_retail/asset_hotel/asset_healthcare/asset_other(数値%)。",
-  "_example": {"8960": {"sponsor": "丸紅・第一生命", "sponsor_changed": 1}}
+  "_comment": "銘柄コード(4桁)ごとに reits 列を手動上書き（スクレイプ値より優先）。編集して git commit/push で反映。主な列: sponsor(株主・出資比率), sponsor_prev(変更前), period_no(整数), name, reit_type, asset_*(数値%), other_as(その他の実内訳)。株主の正本は japan-reit /meigara/{code}/info/ の『上位株主』。JV持株会社は実スポンサーに分解して記載（例 KJRMホールディングス→KKR、第一ライフ丸紅リアルエステート→第一ライフ50%・丸紅50%）。",
+  "3492": {"sponsor": "MIRARTH 90%・共立メンテナンス 5%・ヤマダ電機 5%"},
+  "8953": {"sponsor": "KKR", "sponsor_prev": "三菱商事・UBS"},
+  "3249": {"sponsor": "KKR"},
+  "3488": {"sponsor": "名鉄都市開発 51%・ザイマックスグループ 49%", "sponsor_prev": "ザイマックス"},
+  "3455": {"sponsor": "シップヘルスケアホールディングス"},
+  "8987": {"sponsor": "日鉄興和不動産 54%・第一生命ホールディングス 36%・みずほ銀行 5%・みずほ信託銀行 5%"},
+  "8985": {"sponsor": "SC CAPITAL PARTNERS 87.6%・共立メンテナンス 10.3%・オリックス不動産 2.1%"},
+  "8960": {"sponsor": "第一ライフ 50%・丸紅 50%", "sponsor_prev": "丸紅"}
 }
