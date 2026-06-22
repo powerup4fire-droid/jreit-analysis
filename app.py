@@ -132,7 +132,7 @@ def asset_map(row) -> dict:
     m = {ja: row.get(col) for col, ja in ASSET_COLS.items()}
     m = {k: float(v) for k, v in m.items() if pd.notna(v) and float(v) > 0}
     oa = row.get("_other_as")
-    if oa and "その他" in m:
+    if pd.notna(oa) and isinstance(oa, str) and oa and "その他" in m:   # NaNは真扱いになるため明示ガード
         m[oa] = m.get(oa, 0.0) + m.pop("その他")
     return m
 
@@ -542,7 +542,7 @@ def render_detail(df, divs, code):
         st.markdown("**用途別ポートフォリオ構成**")
         amap = asset_map(row)
         if amap:
-            donut_chart(amap)
+            donut_chart(amap, inside_labels=True)
             brk = "　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1]))
             est = "（推定）" if row.get("asset_estimated") else ""
             st.caption(f"{brk}　／　物件数 {fmt(row['num_properties'])} {est}")
@@ -825,7 +825,7 @@ def render_portfolio(df, divs):
             wsum += h["value"]
         amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
         if amap:
-            donut_chart(amap, height=260)
+            donut_chart(amap, height=260, inside_labels=True)
             st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1])))
         else:
             st.caption("構成データなし")
