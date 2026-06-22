@@ -1,0 +1,65 @@
+name: Update J-REIT data
+
+# 手動実行（Actions タブの "Run workflow"）。必要なら schedule のコメントを外して定期実行。
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "取得モード"
+        type: choice
+        default: "edinet_only"
+        options: ["edinet_only", "full", "full_then_edinet"]
+  # schedule:
+  #   - cron: "0 21 * * 0"   # 毎週日曜 21:00 UTC（= 月曜 6:00 JST）
+
+permissions:
+  contents: write   # 更新した data/jreit.db を push するため
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # ▼ APIキー/パスワードは GitHub の Settings > Secrets and variables > Actions に登録し、
+    #   ここで env として渡す（コードに直書きしない）。スクリプトは os.environ から読む。
+    env:
+      EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+      # 例: 別サービスのキーを足す場合は Secrets 登録後に1行追加
+      # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen || uv sync
+
+      - name: Run data pipeline
+        run: |
+          case "${{ inputs.mode }}" in
+            full)            uv run python update_data.py --all ;;
+            full_then_edinet) uv run python update_data.py --all && uv run python update_data.py --all --edinet ;;
+            *)               uv run python update_data.py --all --edinet ;;
+          esac
+
+      - name: Checkpoint WAL into DB
+        run: |
+          uv run python - <<'PY'
+          import sqlite3
+          con = sqlite3.connect("data/jreit.db")
+          con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+          con.close()
+          PY
+
+      - name: Commit & push updated DB
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/jreit.db
+          if git diff --staged --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "chore(data): refresh J-REIT data via GitHub Actions"
+            git push
+          fi
