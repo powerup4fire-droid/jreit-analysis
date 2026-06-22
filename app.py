@@ -103,7 +103,7 @@ def deviation_series(stat: str, window_rows: int) -> pd.Series:
     return ph.groupby("code", group_keys=False).apply(calc)
 
 
-FUND_FIELDS = ["unrealized_gain", "unrealized_gain_pct", "ltv_pct", "noi",
+FUND_FIELDS = ["unrealized_gain", "unrealized_gain_pct", "ltv_pct", "noi", "noi_yield_pct",
                "appraisal_value", "book_value", "total_assets", "fiscal_period"]
 
 
@@ -512,13 +512,14 @@ def render_detail(df, divs, code):
     m2[3].metric("6年中央乖離", fmt(row["dev_median_6y_pct"], 1, "%"))
 
     # EDINET由来（含み損益/LTV/NOI）。未取込なら「—」。
-    m3 = st.columns(4)
-    m3[0].metric("含み損益", oku(row.get("unrealized_gain")))
-    m3[1].metric("含み益率", fmt(row.get("unrealized_gain_pct"), 1, "%"))
-    m3[2].metric("LTV", fmt(row.get("ltv_pct"), 1, "%"))
-    m3[3].metric("NOI", oku(row.get("noi")))
-    if str(row.get("fund_status")) == "no_key":
-        st.caption("含み損益/LTV/NOI は EDINET 未取込です（EDINET_API_KEY 設定後 `update_data.py --edinet` で反映）。")
+    m3 = st.columns(3)
+    m3[0].metric("含み益率", fmt(row.get("unrealized_gain_pct"), 1, "%"))
+    m3[1].metric("NOI利回り", fmt(row.get("noi_yield_pct"), 2, "%"))
+    m3[2].metric("LTV（有利子負債比率）", fmt(row.get("ltv_pct"), 1, "%"))
+    if pd.isna(row.get("unrealized_gain_pct")):
+        st.caption("含み益率/NOI利回り/LTV は未取得です。")
+    else:
+        st.caption("含み益率・NOI利回り・LTV は japan-reit.com の最新ランキング値です。")
 
     cL, cR = st.columns(2)
     with cL:
@@ -635,11 +636,8 @@ def render_comparison(df, divs):
         ("年間分配金 円/口", lambda c: annual_distribution(divs, c)[0], "high"),
         ("利益超過(分配比)", excess_label, None),
         ("含み益率 %", lambda c: rows[c].get("unrealized_gain_pct"), "high"),
+        ("NOI利回り %", lambda c: rows[c].get("noi_yield_pct"), "high"),
         ("LTV %", lambda c: rows[c].get("ltv_pct"), "low"),
-        ("含み損益 億円", lambda c: (rows[c].get("unrealized_gain") / 1e8
-                                if pd.notna(rows[c].get("unrealized_gain")) else None), "high"),
-        ("NOI 億円", lambda c: (rows[c].get("noi") / 1e8
-                              if pd.notna(rows[c].get("noi")) else None), "high"),
     ]
 
     headers = [f"{c} {rows[c]['name']}" for c in codes]
@@ -649,7 +647,7 @@ def render_comparison(df, divs):
         raw[label] = [acc(c) for c in codes]
     fmt_map = {"利回り %": 2, "価格 円": 0, "時価総額 億円": 0, "NAV倍率": 2, "物件数": 0,
                "200日乖離 %": 1, "6年平均乖離 %": 1, "リーマン比 %": 1, "年間分配金 円/口": 0,
-               "含み益率 %": 1, "LTV %": 1, "含み損益 億円": 0, "NOI 億円": 0}
+               "含み益率 %": 1, "NOI利回り %": 2, "LTV %": 1}
     for label, _, good in specs:
         vals = raw[label]
         out = []
