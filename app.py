@@ -82,6 +82,27 @@ def load(table: str) -> pd.DataFrame:
         con.close()
 
 
+# 単位 → 直近の取引日数（営業日換算。200日=直近200営業日でMA200と整合）
+UNIT_ROWS = {"日": 1, "週": 5, "月": 21, "年": 252}
+
+
+@st.cache_data(ttl=120)
+def deviation_series(stat: str, window_rows: int) -> pd.Series:
+    """価格 vs 直近 window_rows 営業日の平均/中央値 の乖離率(%)。code をindexに返す。"""
+    ph = load("price_history")
+    if ph.empty:
+        return pd.Series(dtype=float)
+    ph = ph.dropna(subset=["close"]).sort_values(["code", "date"])
+
+    def calc(g):
+        w = g["close"].tail(int(window_rows))
+        base = w.mean() if stat == "平均" else w.median()
+        latest = g["close"].iloc[-1]
+        return (latest - base) / base * 100 if base else np.nan
+
+    return ph.groupby("code", group_keys=False).apply(calc)
+
+
 FUND_FIELDS = ["unrealized_gain", "unrealized_gain_pct", "ltv_pct", "noi",
                "appraisal_value", "book_value", "total_assets", "fiscal_period"]
 
@@ -284,7 +305,7 @@ def render_dashboard(df, divs):
     uses = sorted(df["use_primary"].dropna().unique().tolist())
     c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
     with c_sort:
-        sort_key = st.selectbox("並び替え", ["利回り%", "6年平均乖離%", "リーマン比%",
+        sort_key = st.selectbox("並び替え", ["利回り%", "乖離%", "リーマン比%",
                                           "時価総額", "出来高", "コードNo"])
     with c_pick:
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
@@ -304,9 +325,19 @@ def render_dashboard(df, divs):
         st.info("主用途を1つ以上選択してください（ボタンをクリックでON）。")
         return
 
+    # 乖離率の基準（種類＝平均/中央値, 期間＝任意）
+    d1, d2, d3, _d4 = st.columns([1, 1, 1, 3])
+    dev_stat = d1.selectbox("乖離の基準", ["平均", "中央値"],
+                            help="価格と「直近◯期間の平均/中央値」の乖離率を表示します")
+    dev_num = d2.number_input("期間", min_value=1, max_value=9999, value=200, step=1)
+    dev_unit = d3.selectbox("単位", ["日", "週", "月", "年"])
+    dev_rows = int(dev_num) * UNIT_ROWS[dev_unit]
+    dev_ser = deviation_series(dev_stat, dev_rows)   # code -> 乖離%
+
     view = df[df["use_primary"].isin(pick)].copy()
     if only_no_excess:
         view = view[view["exc10"] != True]  # noqa: E712
+    view["dev_sel_pct"] = view["code"].map(dev_ser)
 
     def yn(v):
         return "✓" if v is True else ("—" if v is None else "")
@@ -327,14 +358,14 @@ def render_dashboard(df, divs):
         "スポンサー": g("sponsor").fillna("—"),
         "ｽﾎﾟﾝｻｰ変更": g("sponsor_changed").map(changed_disp),
         "NAV倍率": view["nav_ratio"].round(2),
-        "200日乖離%": view["dev_200d_pct"].round(1), "6年平均乖離%": view["dev_mean_6y_pct"].round(1),
+        "乖離%": view["dev_sel_pct"].round(1),
         "リーマン比%": view["lehman_ratio_pct"].round(1),
         "利益超過(6期)": view["exc6"].map(yn), "利益超過(10期)": view["exc10"].map(yn),
         "Jリート": view["code"],   # japan-reit 該当銘柄ページへのリンク用
         "_primary": view["use_primary"], "_types": view["use_types"],
         "_assets": view.apply(asset_map, axis=1),
     })
-    sort_map = {"利回り%": ("利回り%", False), "6年平均乖離%": ("6年平均乖離%", True),
+    sort_map = {"利回り%": ("利回り%", False), "乖離%": ("乖離%", True),
                 "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False),
                 "出来高": ("出来高", False), "コードNo": ("コード", True)}
     col, asc = sort_map[sort_key]
@@ -376,7 +407,7 @@ def render_dashboard(df, divs):
     num_fmt = {
         "利回り%": "{:.2f}", "価格": "{:,.0f}", "出来高": "{:,.0f}",
         "時価総額(億円)": "{:,.0f}", "NAV倍率": "{:.2f}",
-        "200日乖離%": "{:+.1f}", "6年平均乖離%": "{:+.1f}", "リーマン比%": "{:.1f}",
+        "乖離%": "{:+.1f}", "リーマン比%": "{:.1f}",
     }
     for c, spec in num_fmt.items():
         summary[c] = summary[c].map(lambda v, s=spec: "—" if pd.isna(v) else s.format(v))
@@ -384,7 +415,7 @@ def render_dashboard(df, divs):
     # st.dataframe(canvas) は CSS グラデーション背景を描画できないため、HTMLテーブルで描画する。
     cols = list(summary.columns)
     right_cols = {"利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
-                  "200日乖離%", "6年平均乖離%", "リーマン比%"}
+                  "乖離%", "リーマン比%"}
     center_cols = {"タイプ", "上場期", "ｽﾎﾟﾝｻｰ変更", "利益超過(6期)", "利益超過(10期)", "Jリート"}
     head = "".join(
         f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
@@ -433,6 +464,7 @@ def render_dashboard(df, divs):
         f'<span style="background:{c};color:{FONT};padding:2px 8px;border-radius:4px;font-size:12px">{k}</span>'
         for k, c in ASSET_COLOR.items())
     st.markdown("主用途セルは運用比率で色分け（多い順に左→右）: " + legend, unsafe_allow_html=True)
+    st.caption(f"「乖離%」= 価格と直近{dev_num}{dev_unit}（{dev_rows}営業日）の{dev_stat}との乖離率")
     st.caption("※ スポンサー・上場期・変更有無は japan-reit.com からの自動取得（変更有無は説明文ベースの推定で見落とし得ます）")
     st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄　／　詳細は下の「個別銘柄」で選択")
 
