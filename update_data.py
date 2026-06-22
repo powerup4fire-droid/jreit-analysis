@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-from jreit.config import load_config          # noqa: E402
-from jreit.pipeline import run, run_edinet     # noqa: E402
+from jreit.config import load_config                    # noqa: E402
+from jreit.pipeline import run, run_edinet, run_ranking  # noqa: E402
 
 
 def main():
@@ -24,9 +24,18 @@ def main():
     ap.add_argument("--all", action="store_true", help="全銘柄（sitemapから取得して全件）")
     ap.add_argument("--edinet", action="store_true",
                     help="EDINET取込（含み損益/LTV/NOI等）。要 環境変数 EDINET_API_KEY")
+    ap.add_argument("--ranking", action="store_true",
+                    help="japan-reit ランキングから 含み益率/NOI利回り/LTV を更新（キー不要・軽量）")
     args = ap.parse_args()
 
     cfg = load_config()
+
+    # ランキング指標のみ更新（単一リクエスト・全銘柄）。
+    if args.ranking:
+        print("▶ ランキング指標 更新中…")
+        summary = run_ranking(cfg)
+        print(f"✅ 完了: {summary}")
+        return
     if args.codes:
         codes = [c.strip() for c in args.codes.split(",") if c.strip()]
     elif args.all:

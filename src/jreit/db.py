@@ -47,8 +47,9 @@ CREATE TABLE IF NOT EXISTS fundamentals (
   interest_bearing_debt REAL,    -- 有利子負債 円
   ltv_pct REAL,                  -- LTV = interest_bearing_debt / total_assets * 100
   noi REAL,                      -- 不動産賃貸事業 NOI 円（取得できれば）
+  noi_yield_pct REAL,            -- NOI利回り %（japan-reit ランキング）
   doc_id TEXT,                   -- EDINET docID
-  source TEXT,                   -- "edinet"
+  source TEXT,                   -- "edinet" | "japan-reit"
   parse_status TEXT,             -- ok / partial / no_key / not_found / error
   updated_at TEXT
 );
@@ -65,7 +66,26 @@ def connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(db_path)
     con.execute("PRAGMA journal_mode=WAL;")
     con.executescript(DDL)
+    # 既存DBへの後付けカラム（無ければ追加）
+    have = {r[1] for r in con.execute("PRAGMA table_info(fundamentals)")}
+    for c, t in [("noi_yield_pct", "REAL")]:
+        if c not in have:
+            con.execute(f"ALTER TABLE fundamentals ADD COLUMN {c} {t}")
     return con
+
+
+def upsert_ranking(con, code: str, metrics: dict, now: str):
+    """japan-reit ランキング由来の率指標(含み益率/NOI利回り/LTV)を fundamentals へ。"""
+    con.execute(
+        """INSERT INTO fundamentals (code,unrealized_gain_pct,noi_yield_pct,ltv_pct,source,parse_status,updated_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(code) DO UPDATE SET
+           unrealized_gain_pct=excluded.unrealized_gain_pct,
+           noi_yield_pct=excluded.noi_yield_pct, ltv_pct=excluded.ltv_pct,
+           source=excluded.source, parse_status=excluded.parse_status, updated_at=excluded.updated_at""",
+        (code, metrics.get("unrealized_gain_pct"), metrics.get("noi_yield_pct"),
+         metrics.get("ltv_pct"), "japan-reit", "ok", now),
+    )
 
 
 def upsert_reit(con, r: Reit, now: str):

@@ -92,6 +92,35 @@ def run(codes: list[str], cfg: Config) -> dict:
     return {"run_id": run_id, "attempted": len(codes), "succeeded": succeeded}
 
 
+def run_ranking(cfg: Config) -> dict:
+    """japan-reit ランキングから 含み益率/NOI利回り/LTV を全銘柄ぶん取得し fundamentals 更新。
+    EDINETキー不要・単一リクエストで軽量。スケジュール実行向き。"""
+    log = setup_logging(cfg.path("log"))
+    con = db.connect(cfg.path("db"))
+    client = HttpClient(cfg.net.get("user_agent", "jreit/0.1"),
+                        cfg.net.get("max_retries", 3),
+                        cfg.net.get("min_sleep_seconds", 2),
+                        cfg.net.get("timeout_seconds", 30))
+    from .scrapers.ranking import fetch_ranking_metrics
+    metrics = fetch_ranking_metrics(client)
+    codes = [r[0] for r in con.execute("SELECT code FROM reits")]
+    ok = 0
+    for code in codes:
+        m = metrics.get(code)
+        if not m:
+            continue
+        try:
+            db.upsert_ranking(con, code, m, _now())
+            ok += 1
+        except Exception as e:  # noqa
+            log.error(f"{code}: ranking upsert error: {e}")
+    con.commit()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+    log.info(f"RANKING FINISH updated={ok}/{len(codes)}")
+    return {"attempted": len(codes), "updated": ok, "fetched": len(metrics)}
+
+
 def run_edinet(codes: list[str], cfg: Config) -> dict:
     """EDINETバッチ取込: 各REITのファンダ(含み損益/LTV/NOI等)を取得し fundamentals テーブルへ。"""
     log = setup_logging(cfg.path("log"))
