@@ -111,6 +111,13 @@ def run_ranking(cfg: Config) -> dict:
             continue
         try:
             db.upsert_ranking(con, code, m, _now())
+            # 時価総額/NAV が欠損(yfinance未取得)なら ランキング値で補完
+            if m.get("market_cap"):
+                con.execute("UPDATE stock_metrics SET market_cap=? WHERE code=? AND market_cap IS NULL",
+                            (m["market_cap"], code))
+            if m.get("nav_ratio"):
+                con.execute("UPDATE stock_metrics SET nav_ratio=? WHERE code=? AND nav_ratio IS NULL",
+                            (m["nav_ratio"], code))
             ok += 1
         except Exception as e:  # noqa
             log.error(f"{code}: ranking upsert error: {e}")

@@ -256,15 +256,21 @@ def build_frame():
     df["dev_200d_pct"] = np.where(df["ma_200d"].notna() & df["latest_price"].notna() & (df["ma_200d"] != 0),
                                   (df["latest_price"] - df["ma_200d"]) / df["ma_200d"] * 100, np.nan)
 
-    def excess_in_window(code, n):
+    def excess_ratio_window(code, n):
+        """直近n期の「利益超過分が分配金に占める割合(%)」= Σ利益超過 / Σ分配金 ×100。
+        平均値ベース（sum/sum は平均/平均と同値）。データ無し=None / 利益超過なし=0.0。"""
         d = divs[(divs["code"] == code) & (divs["period_label"] != "latest")]
         if d.empty:
             return None
         d = d.assign(k=d["period_label"].map(period_key)).sort_values("k", ascending=False).head(n)
-        return bool((d["excess_present"] == 1).any()) if len(d) else None
+        tot = d["total_distribution"].sum(skipna=True)
+        exc = d["excess_distribution"].sum(skipna=True)
+        if not tot or pd.isna(tot):
+            return None
+        return round(exc / tot * 100, 1) if pd.notna(exc) else 0.0
 
-    df["exc6"] = df["code"].map(lambda c: excess_in_window(c, 6))
-    df["exc10"] = df["code"].map(lambda c: excess_in_window(c, 10))
+    df["exc6"] = df["code"].map(lambda c: excess_ratio_window(c, 6))
+    df["exc10"] = df["code"].map(lambda c: excess_ratio_window(c, 10))
     return df, divs, runs, reits
 
 
@@ -336,17 +342,26 @@ def render_dashboard(df, divs):
 
     view = df[df["use_primary"].isin(pick)].copy()
     if only_no_excess:
-        view = view[view["exc10"] != True]  # noqa: E712
+        view = view[~(view["exc10"].fillna(-1) > 0)]   # 利益超過なし（0 or データ無し）のみ
     view["dev_sel_pct"] = view["code"].map(dev_ser)
 
-    def yn(v):
-        return "✓" if v is True else ("—" if v is None else "")
+    def exc_disp(v):
+        """利益超過が分配金に占める割合。あり=「X.X%」/ なし=「なし」/ データ無し=「—」。"""
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "—"
+        return f"{v:.1f}%" if v > 0 else "なし"
 
     def period_disp(v):
         return f"{int(v)}期" if pd.notna(v) else "—"
 
-    def changed_disp(v):
-        return "○" if v == 1 else "✕"   # 上場以来のスポンサー変更: あり○ / なし✕
+    def sponsor_disp(row):
+        """変更があれば「変更前 → 現在」を併記。"""
+        cur = row.get("sponsor")
+        prev = row.get("sponsor_prev")
+        cur = cur if (cur and pd.notna(cur)) else "—"
+        if prev and pd.notna(prev) and str(prev) != str(cur):
+            return f"{prev} → {cur}"
+        return cur
 
     g = lambda c: view[c] if c in view.columns else pd.Series([None] * len(view), index=view.index)
     summary = pd.DataFrame({
@@ -355,12 +370,11 @@ def render_dashboard(df, divs):
         "利回り%": view["yield_total"].round(2),
         "価格": view["latest_price"], "出来高": view["volume"],
         "時価総額(億円)": view["mktcap_oku"].round(0),
-        "スポンサー": g("sponsor").fillna("—"),
-        "ｽﾎﾟﾝｻｰ変更": g("sponsor_changed").map(changed_disp),
+        "スポンサー": view.apply(sponsor_disp, axis=1),
         "NAV倍率": view["nav_ratio"].round(2),
         "乖離%": view["dev_sel_pct"].round(1),
         "リーマン比%": view["lehman_ratio_pct"].round(1),
-        "利益超過(6期)": view["exc6"].map(yn), "利益超過(10期)": view["exc10"].map(yn),
+        "利益超過(6期)": view["exc6"].map(exc_disp), "利益超過(10期)": view["exc10"].map(exc_disp),
         "Jリート": view["code"],   # japan-reit 該当銘柄ページへのリンク用
         "_primary": view["use_primary"], "_types": view["use_types"],
         "_assets": view.apply(asset_map, axis=1),
@@ -416,7 +430,7 @@ def render_dashboard(df, divs):
     cols = list(summary.columns)
     right_cols = {"利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
                   "乖離%", "リーマン比%"}
-    center_cols = {"タイプ", "上場期", "ｽﾎﾟﾝｻｰ変更", "利益超過(6期)", "利益超過(10期)", "Jリート"}
+    center_cols = {"タイプ", "上場期", "利益超過(6期)", "利益超過(10期)", "Jリート"}
     head = "".join(
         f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
         f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
@@ -495,10 +509,12 @@ def render_detail(df, divs, code):
         f'{row["use_label"]} / {row["type_jp"]}</span>', unsafe_allow_html=True)
     per = row.get("period_no")
     sp = row.get("sponsor")
-    chg = "○" if row.get("sponsor_changed") == 1 else "✕"
+    prev = row.get("sponsor_prev")
     per_s = f"{int(per)}期" if pd.notna(per) else "—"
     sp_s = sp if (sp and pd.notna(sp)) else "—"
-    st.caption(f"上場期: {per_s}　／　スポンサー: {sp_s}　／　スポンサー変更: {chg}")
+    if prev and pd.notna(prev) and str(prev) != str(sp_s):
+        sp_s = f"{prev} → {sp_s}（スポンサー変更）"
+    st.caption(f"上場期: {per_s}　／　スポンサー: {sp_s}")
 
     m = st.columns(4)
     m[0].metric("価格", fmt(row["latest_price"]))

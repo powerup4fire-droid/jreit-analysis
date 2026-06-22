@@ -49,15 +49,19 @@ def fetch_ranking_metrics(client: HttpClient) -> dict[str, dict]:
 
     c_code = col("証券コード") or col("コード")
     c_ug, c_noi, c_ltv = col("含み損益率"), col("NOI利回り"), col("有利子負債比率")
+    c_cap, c_nav = col("時価総額"), col("NAV倍率")
     out: dict[str, dict] = {}
     for _, r in tbl.iterrows():
         m = re.search(r"(\d{4})", str(r.get(c_code, "")))
         if not m:
             continue
+        cap_m = _pct(r.get(c_cap)) if c_cap is not None else None  # 百万円
         out[m.group(1)] = {
             "unrealized_gain_pct": _pct(r.get(c_ug)),
             "noi_yield_pct": _pct(r.get(c_noi)),
             "ltv_pct": _pct(r.get(c_ltv)),
+            "market_cap": cap_m * 1e6 if cap_m else None,   # 円換算
+            "nav_ratio": _pct(r.get(c_nav)) if c_nav is not None else None,
         }
     logger.info(f"ranking: parsed {len(out)} codes")
     return out
