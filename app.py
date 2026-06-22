@@ -331,18 +331,27 @@ def render_dashboard(df, divs):
         st.info("主用途を1つ以上選択してください（ボタンをクリックでON）。")
         return
 
-    # 乖離率の基準（種類＝平均/中央値, 期間＝任意）
-    d1, d2, d3, _d4 = st.columns([1, 1, 1, 3])
+    # 乖離率の基準（種類＝平均/中央値, 期間＝任意）＋ スポンサー逆引き検索
+    d1, d2, d3, d4 = st.columns([1, 1, 1, 3])
     dev_stat = d1.selectbox("乖離の基準", ["平均", "中央値"],
                             help="価格と「直近◯期間の平均/中央値」の乖離率を表示します")
     dev_num = d2.number_input("期間", min_value=1, max_value=9999, value=200, step=1)
     dev_unit = d3.selectbox("単位", ["日", "週", "月", "年"])
+    sponsor_q = d4.text_input("スポンサーで逆引き検索", placeholder="例: 三井不動産 / KKR / 三菱",
+                              help="スポンサー名（部分一致）で銘柄を絞り込み")
     dev_rows = int(dev_num) * UNIT_ROWS[dev_unit]
     dev_ser = deviation_series(dev_stat, dev_rows)   # code -> 乖離%
 
     view = df[df["use_primary"].isin(pick)].copy()
     if only_no_excess:
         view = view[~(view["exc10"].fillna(-1) > 0)]   # 利益超過なし（0 or データ無し）のみ
+    if sponsor_q.strip():
+        q = sponsor_q.strip()
+        sp_col = view["sponsor"] if "sponsor" in view.columns else pd.Series("", index=view.index)
+        prev_col = view["sponsor_prev"] if "sponsor_prev" in view.columns else pd.Series("", index=view.index)
+        hit = sp_col.fillna("").str.contains(q, case=False) | prev_col.fillna("").str.contains(q, case=False)
+        view = view[hit]
+        st.caption(f"🔎 スポンサー「{q}」に該当: {len(view)} 銘柄")
     view["dev_sel_pct"] = view["code"].map(dev_ser)
 
     def exc_disp(v):
@@ -735,6 +744,39 @@ def render_comparison(df, divs):
 # ===========================================================================
 # 💼 マイポートフォリオ
 # ===========================================================================
+def parse_bulk(text: str) -> pd.DataFrame | None:
+    """貼り付けCSV/TSV → [コード,口数,取得単価]。区切りはカンマ/タブ。ヘッダ行や順序差は吸収。"""
+    rows = []
+    for line in str(text).strip().splitlines():
+        cells = [c.strip() for c in re.split(r"[\t,]", line.strip())]
+        if not any(cells):
+            continue
+        codes = [c for c in cells if re.fullmatch(r"\d{4}", c)]
+        if not codes:           # コード4桁が無い行（ヘッダ等）はスキップ
+            continue
+        code = codes[0]
+        rest = [c for c in cells if c != code]
+        nums = []
+        for c in rest:
+            cc = re.sub(r"[^\d.]", "", c)
+            nums.append(float(cc) if cc not in ("", ".") else None)
+        units = nums[0] if len(nums) >= 1 and nums[0] else 1.0
+        cost = nums[1] if len(nums) >= 2 else None
+        rows.append({"コード": code, "口数": units, "取得単価": cost})
+    return pd.DataFrame(rows) if rows else None
+
+
+def sheets_csv_url(url: str) -> str:
+    """Google Sheets の編集/共有URLを CSV エクスポートURLへ変換（公開シート向け）。"""
+    m = re.search(r"/spreadsheets/d/([\w-]+)", url)
+    if not m:
+        return url
+    sid = m.group(1)
+    g = re.search(r"[#&?]gid=(\d+)", url)
+    gid = g.group(1) if g else "0"
+    return f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+
+
 def render_portfolio(df, divs):
     st.subheader("💼 マイポートフォリオ")
     st.caption("保有銘柄（コード・口数・取得単価）を入力すると、全体の利回り・分配金見込み・含み益・用途構成を集計します。")
@@ -743,8 +785,42 @@ def render_portfolio(df, divs):
     if "pf" not in st.session_state:
         st.session_state["pf"] = pd.DataFrame(
             {"コード": ["8985", "8960"], "口数": [1, 1], "取得単価": [np.nan, np.nan]})
+    st.session_state.setdefault("pf_ver", 0)
+
+    with st.expander("📥 一括入力（CSV貼り付け / ファイル / Google Sheets）"):
+        st.caption("形式: 各行「コード, 口数, 取得単価」。ExcelやGoogleスプレッドシートからコピペ可（タブ区切りも可）。ヘッダ行・列順の違いは自動調整。取得単価は空欄可。")
+        paste = st.text_area("① 貼り付け（CSV/TSV）", height=120,
+                             placeholder="8985, 2, 70000\n8960, 1, 158000\n3492, 5")
+        up = st.file_uploader("② CSVファイル", type=["csv", "tsv", "txt"])
+        gs = st.text_input("③ Google スプレッドシートURL（共有/公開のもの）",
+                           placeholder="https://docs.google.com/spreadsheets/d/.../edit#gid=0")
+        mode = st.radio("反映方法", ["置き換え", "追加"], horizontal=True, index=0)
+        if st.button("読み込む", type="primary"):
+            new = None
+            try:
+                if paste.strip():
+                    new = parse_bulk(paste)
+                elif up is not None:
+                    new = parse_bulk(up.getvalue().decode("utf-8", "ignore"))
+                elif gs.strip():
+                    new = parse_bulk(pd.read_csv(sheets_csv_url(gs)).to_csv(index=False))
+                else:
+                    st.warning("いずれかに入力してください。")
+            except Exception as e:  # noqa
+                st.error(f"読み込み失敗: {e}")
+            if new is not None and not new.empty:
+                if mode == "追加":
+                    new = pd.concat([st.session_state["pf"], new], ignore_index=True)
+                st.session_state["pf"] = new.reset_index(drop=True)
+                st.session_state["pf_ver"] += 1
+                st.success(f"{len(new)} 行を読み込みました。")
+                st.rerun()
+            elif new is not None:
+                st.warning("有効な銘柄行が見つかりませんでした（4桁コードを含む行が必要）。")
+
     edited = st.data_editor(
-        st.session_state["pf"], num_rows="dynamic", use_container_width=True, key="pf_editor",
+        st.session_state["pf"], num_rows="dynamic", use_container_width=True,
+        key=f"pf_editor_{st.session_state['pf_ver']}",
         column_config={
             "コード": st.column_config.TextColumn("コード", help="4桁の証券コード", required=True),
             "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
