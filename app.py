@@ -27,8 +27,11 @@ ASSET_COLS = {
 ASSET_COLOR = {
     "オフィス": "#7cb87c", "住居": "#b9cf66", "物流": "#8fc1e3",
     "商業": "#f0c14b", "ホテル": "#ef9a9a", "ヘルスケア": "#a6b8e6",
-    "その他": "#cfd4d8",
+    "底地": "#c9a063", "その他": "#cfd4d8",
 }
+# 「その他(asset_other)」の実際の内訳が判っている銘柄: code -> 用途名
+# （portfolio.json は g1=6分類のため、底地/ヘルスケア等は その他 に入る。overrides.json の "other_as" でも上書き可）
+OTHER_AS = {"2971": "底地", "8977": "底地", "3249": "底地", "3455": "ヘルスケア"}
 FONT = "#111111"   # フォントは全て黒で統一
 # 後方互換: (bg, fg) 形式で参照する箇所向け（fgは常に黒）
 ASSET_STYLE = {k: (v, FONT) for k, v in ASSET_COLOR.items()}
@@ -103,6 +106,16 @@ def jp_type(t) -> str:
     return s or "—"
 
 
+def asset_map(row) -> dict:
+    """用途別比率 {用途: %}。判明している銘柄は『その他』を実内訳(底地/ヘルスケア等)へ振替える。"""
+    m = {ja: row.get(col) for col, ja in ASSET_COLS.items()}
+    m = {k: float(v) for k, v in m.items() if pd.notna(v) and float(v) > 0}
+    oa = row.get("_other_as")
+    if oa and "その他" in m:
+        m[oa] = m.get(oa, 0.0) + m.pop("その他")
+    return m
+
+
 def derive_type(row) -> str:
     """タイプを判定。明示ラベル(総合/複合/特化)は信頼してそのまま、
     キーワード誤マッチの bare 値は資産内訳から再判定（例: 3249 office→複合）。"""
@@ -113,8 +126,7 @@ def derive_type(row) -> str:
         return "複合"
     if "特化" in rt:
         return jp_type(rt)
-    assets = {ja: row.get(col) for col, ja in ASSET_COLS.items()}
-    assets = {k: float(v) for k, v in assets.items() if pd.notna(v) and v > 0}
+    assets = asset_map(row)
     if not assets:
         return jp_type(rt) if rt else "—"
     nonother = {k: v for k, v in assets.items() if k != "その他"}
@@ -146,8 +158,7 @@ def use_info(row) -> tuple[str, str, list[str]]:
     rt, nm = str(row.get("reit_type") or ""), str(row.get("name") or "")
     if "healthcare" in rt or "ヘルスケア" in rt or "ヘルスケア" in nm:
         return "ヘルスケア", "ヘルスケア", ["ヘルスケア"]
-    pcts = {ja: row.get(col) for col, ja in ASSET_COLS.items() if ja != "その他"}
-    pcts = {k: float(v) for k, v in pcts.items() if pd.notna(v) and v > 0}
+    pcts = {k: v for k, v in asset_map(row).items() if k != "その他"}  # 底地等は主用途候補に含む
     if not pcts:
         lbl = jp_type(rt)
         u = lbl if lbl != "—" else "その他"
@@ -207,6 +218,14 @@ def build_frame():
         for c in FUND_FIELDS:
             df[c] = np.nan
         df["fund_status"] = None
+
+    # 「その他」の実内訳マップ（定数 + overrides.json の "other_as"）。use_info より前に必要。
+    other_as = dict(OTHER_AS)
+    for code, fields in ov.items():
+        if isinstance(fields, dict) and fields.get("other_as"):
+            other_as[code] = fields["other_as"]
+    df["_other_as"] = df["code"].map(other_as)
+
     uinfo = df.apply(use_info, axis=1)
     df["use_primary"] = uinfo.map(lambda x: x[0])
     df["use_label"] = uinfo.map(lambda x: x[1])
@@ -311,8 +330,9 @@ def render_dashboard(df, divs):
         "200日乖離%": view["dev_200d_pct"].round(1), "6年平均乖離%": view["dev_mean_6y_pct"].round(1),
         "リーマン比%": view["lehman_ratio_pct"].round(1),
         "利益超過(6期)": view["exc6"].map(yn), "利益超過(10期)": view["exc10"].map(yn),
+        "Jリート": view["code"],   # japan-reit 該当銘柄ページへのリンク用
         "_primary": view["use_primary"], "_types": view["use_types"],
-        "_assets": view.apply(lambda r: {ja: r.get(col) for col, ja in ASSET_COLS.items()}, axis=1),
+        "_assets": view.apply(asset_map, axis=1),
     })
     sort_map = {"利回り%": ("利回り%", False), "6年平均乖離%": ("6年平均乖離%", True),
                 "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False),
@@ -365,7 +385,7 @@ def render_dashboard(df, divs):
     cols = list(summary.columns)
     right_cols = {"利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
                   "200日乖離%", "6年平均乖離%", "リーマン比%"}
-    center_cols = {"タイプ", "上場期", "ｽﾎﾟﾝｻｰ変更", "利益超過(6期)", "利益超過(10期)"}
+    center_cols = {"タイプ", "上場期", "ｽﾎﾟﾝｻｰ変更", "利益超過(6期)", "利益超過(10期)", "Jリート"}
     head = "".join(
         f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
         f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
@@ -373,6 +393,7 @@ def render_dashboard(df, divs):
     rows_html = []
     for i in range(len(summary)):
         r = summary.iloc[i]
+        code_v = str(r["コード"])
         tds = []
         for c in cols:
             v = r[c]
@@ -385,6 +406,17 @@ def render_dashboard(df, divs):
                 tds.append(
                     f'<td style="background:{tb};color:{FONT};font-weight:700;text-align:center;'
                     f'white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+            elif c == "コード":
+                # クリックで下の「個別銘柄」に飛ぶ（?code= をセットして #detail へスクロール）
+                tds.append(
+                    f'<td style="text-align:left;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
+                    f'<a href="?code={code_v}#detail" target="_self" '
+                    f'style="color:#1f6feb;font-weight:700;text-decoration:none">{v}</a></td>')
+            elif c == "Jリート":
+                tds.append(
+                    f'<td style="text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
+                    f'<a href="https://www.japan-reit.com/meigara/{code_v}/" target="_blank" '
+                    f'rel="noopener" style="color:#1f6feb;text-decoration:none">japan-reit ↗</a></td>')
             else:
                 align = "right" if c in right_cols else ("center" if c in center_cols else "left")
                 tds.append(
@@ -405,8 +437,15 @@ def render_dashboard(df, divs):
     st.caption(f"表示 {len(summary)} / 全 {len(df)} 銘柄　／　詳細は下の「個別銘柄」で選択")
 
     # ===== 個別 =====
+    st.markdown('<div id="detail"></div>', unsafe_allow_html=True)   # コード列クリックのスクロール先
     st.subheader("🔎 個別銘柄")
     labels, l2c, c2l = label_maps(df)
+    # サマリのコードをクリックすると ?code= が付く → 該当銘柄を選択（消費して以後の手動選択を妨げない）
+    qcode = st.query_params.get("code")
+    if qcode:
+        if qcode in c2l:
+            st.session_state["detail_code"] = qcode
+        del st.query_params["code"]
     default_code = st.session_state.get("detail_code", df.sort_values("code").iloc[0]["code"])
     if default_code not in c2l:
         default_code = df.sort_values("code").iloc[0]["code"]
@@ -452,7 +491,7 @@ def render_detail(df, divs, code):
     cL, cR = st.columns(2)
     with cL:
         st.markdown("**用途別ポートフォリオ構成**")
-        amap = {ja: float(row[col]) for col, ja in ASSET_COLS.items() if pd.notna(row.get(col)) and row.get(col)}
+        amap = asset_map(row)
         if amap:
             donut_chart(amap)
             brk = "　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1]))
@@ -638,8 +677,7 @@ def render_comparison(df, divs):
     for col, c in zip(pcols, codes):
         with col:
             st.caption(f"{c} {rows[c]['name']}")
-            amap = {ja: float(rows[c][k]) for k, ja in ASSET_COLS.items()
-                    if pd.notna(rows[c].get(k)) and rows[c].get(k)}
+            amap = asset_map(rows[c])
             if amap:
                 donut_chart(amap, height=210, legend=False, inside_labels=True)
                 top = sorted(amap.items(), key=lambda x: -x[1])[:3]
@@ -686,7 +724,7 @@ def render_portfolio(df, divs):
             "annual_income": (annual_pu * units) if annual_pu is not None else None,
             "annual_excess": (excess_pu * units) if excess_pu is not None else None,
             "yield": rec["yield_total"], "use_primary": rec["use_primary"],
-            "asset": {k: rec.get(k) for k in ASSET_COLS},
+            "asset_pct": asset_map(rec),
             "fund_ug_pct": rec.get("unrealized_gain_pct"),
         })
     if not holds:
@@ -731,15 +769,13 @@ def render_portfolio(df, divs):
     cL, cR = st.columns([1, 1])
     with cL:
         st.markdown("**運用物件タイプ（評価額加重）**")
-        agg = {ja: 0.0 for ja in ASSET_COLS.values()}
+        agg = {}
         wsum = 0.0
         for h in holds:
             if h["value"] is None:
                 continue
-            for k, ja in ASSET_COLS.items():
-                v = h["asset"].get(k)
-                if pd.notna(v):
-                    agg[ja] += float(v) / 100.0 * h["value"]
+            for ja, v in h["asset_pct"].items():
+                agg[ja] = agg.get(ja, 0.0) + float(v) / 100.0 * h["value"]
             wsum += h["value"]
         amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
         if amap:
