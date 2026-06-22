@@ -1,29 +1,25 @@
 name: Update J-REIT data
 
-# 手動実行（Actions タブの "Run workflow"）。必要なら schedule のコメントを外して定期実行。
+# 既定/スケジュール = ランキング指標のみ（軽量・キー不要）。手動で full / edinet も選択可。
 on:
   workflow_dispatch:
     inputs:
       mode:
         description: "取得モード"
         type: choice
-        default: "edinet_only"
-        options: ["edinet_only", "full", "full_then_edinet"]
-  # schedule:
-  #   - cron: "0 21 * * 0"   # 毎週日曜 21:00 UTC（= 月曜 6:00 JST）
+        default: "ranking"
+        options: ["ranking", "full", "edinet", "full_then_edinet"]
+  schedule:
+    - cron: "0 22 * * 1"   # 毎週火 07:00 JST（月22:00 UTC）にランキング指標を自動更新
 
 permissions:
-  contents: write   # 更新した data/jreit.db を push するため
+  contents: write
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    # ▼ APIキー/パスワードは GitHub の Settings > Secrets and variables > Actions に登録し、
-    #   ここで env として渡す（コードに直書きしない）。スクリプトは os.environ から読む。
     env:
       EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
-      # 例: 別サービスのキーを足す場合は Secrets 登録後に1行追加
-      # OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,10 +33,12 @@ jobs:
 
       - name: Run data pipeline
         run: |
-          case "${{ inputs.mode }}" in
-            full)            uv run python update_data.py --all ;;
+          mode="${{ inputs.mode }}"
+          case "$mode" in
+            full)             uv run python update_data.py --all ;;
+            edinet)           uv run python update_data.py --all --edinet ;;
             full_then_edinet) uv run python update_data.py --all && uv run python update_data.py --all --edinet ;;
-            *)               uv run python update_data.py --all --edinet ;;
+            *)                uv run python update_data.py --ranking ;;
           esac
 
       - name: Checkpoint WAL into DB
