@@ -812,10 +812,12 @@ def render_portfolio(df, divs):
     # 保存状態の表示
     if cloud_store.enabled():
         _u = cloud_store.current_user()
-        if _u:
+        if _u and _u != "solo":
             st.caption(f"☁️ クラウド保存: 有効（{_u} 専用・端末間で自動同期）")
+        elif _u == "solo":
+            st.caption("☁️ クラウド保存: 有効（単独利用モード・全デバイスで自動同期）")
         else:
-            st.caption("☁️ クラウド保存: ログイン待ち（private公開でGoogleログインすると有効・現在はこのセッションのみ）")
+            st.caption("☁️ クラウド保存: ログイン待ち（Googleログインすると有効・現在はこのセッションのみ）")
     else:
         st.caption("💾 保存先未設定（このセッションのみ・タブを閉じると消えます）")
 

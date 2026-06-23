@@ -36,17 +36,39 @@ def enabled() -> bool:
     return all(_cfg())
 
 
-def current_user() -> str | None:
+def _viewer_email() -> str | None:
     """ログイン中の閲覧者メール（Community Cloud の private アプリで自動付与）。"""
+    u = getattr(st, "user", None)
+    if u is None:
+        return None
+    for getter in (lambda: u.get("email"), lambda: u.email, lambda: u["email"]):
+        try:
+            v = getter()
+            if v:
+                return v
+        except Exception:
+            continue
+    return None
+
+
+def current_user() -> str | None:
+    """保存キーに使う識別子。
+
+    1. 正規: ログイン中の閲覧者メール（複数人を招待しても各自専用になる）
+    2. 保険: secrets で solo_mode=true の時は固定キー "solo" を返す。
+       （private・自分だけで使う運用向け。オーナーがダッシュボード経由で開くと
+        st.user が空になることがあるため、それでも端末間同期を効かせる）
+    None を返すと呼び出し側が KV を使わない（＝セッションのみ）。
+    """
+    email = _viewer_email()
+    if email:
+        return email
     try:
-        if getattr(st.user, "is_logged_in", False):
-            return st.user.email
+        if bool(st.secrets["cloudflare"].get("solo_mode")):
+            return "solo"
     except Exception:
         pass
-    try:  # 古い属性 / dict 形式のフォールバック
-        return st.user.get("email")  # type: ignore[attr-defined]
-    except Exception:
-        return None
+    return None
 
 
 def _key() -> str:
