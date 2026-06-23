@@ -8,6 +8,7 @@ SQLite(data/jreit.db) のみ参照。スマホ/PC両対応。起動: streamlit r
 """
 from __future__ import annotations
 import datetime as dt
+import hashlib
 import json
 import re
 import sqlite3
@@ -16,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt   # Streamlit同梱（追加インストール不要）
+import cloud_store      # Cloudflare KV 永続化（ログインユーザー単位・端末間同期）
 
 DB = Path(__file__).resolve().parent / "data" / "jreit.db"
 ASSET_COLS = {
@@ -782,10 +784,40 @@ def render_portfolio(df, divs):
     st.caption("保有銘柄（コード・口数・取得単価）を入力すると、全体の利回り・分配金見込み・含み益・用途構成を集計します。")
 
     _, l2c, c2l = label_maps(df)
+    PF_COLS = ["コード", "口数", "取得単価"]
     if "pf" not in st.session_state:
-        st.session_state["pf"] = pd.DataFrame(
-            {"コード": ["8985", "8960"], "口数": [1, 1], "取得単価": [np.nan, np.nan]})
+        loaded = None
+        # ログイン中のユーザーが居る時だけKVを参照（未ログイン時に共有キーを使わない安全策）
+        if cloud_store.enabled() and cloud_store.current_user():
+            try:
+                loaded = cloud_store.load()      # 保存済みデータ / [] / None
+            except Exception as e:  # noqa
+                st.warning(f"クラウド読込に失敗（セッションのみで継続）: {e}")
+        if loaded:                                # 保存済みデータあり
+            pf = pd.DataFrame(loaded)
+            for c in PF_COLS:
+                if c not in pf.columns:
+                    pf[c] = np.nan
+            st.session_state["pf"] = pf[PF_COLS]
+        elif loaded == []:                        # クラウド有効・初回（空）
+            st.session_state["pf"] = pd.DataFrame(
+                {"コード": pd.Series(dtype=str),
+                 "口数": pd.Series(dtype=float),
+                 "取得単価": pd.Series(dtype=float)})
+        else:                                     # クラウド無効（ローカル等）→ 従来の例示
+            st.session_state["pf"] = pd.DataFrame(
+                {"コード": ["8985", "8960"], "口数": [1, 1], "取得単価": [np.nan, np.nan]})
     st.session_state.setdefault("pf_ver", 0)
+
+    # 保存状態の表示
+    if cloud_store.enabled():
+        _u = cloud_store.current_user()
+        if _u:
+            st.caption(f"☁️ クラウド保存: 有効（{_u} 専用・端末間で自動同期）")
+        else:
+            st.caption("☁️ クラウド保存: ログイン待ち（private公開でGoogleログインすると有効・現在はこのセッションのみ）")
+    else:
+        st.caption("💾 保存先未設定（このセッションのみ・タブを閉じると消えます）")
 
     with st.expander("📥 一括入力（CSV貼り付け / ファイル / Google Sheets）"):
         st.caption("形式: 各行「コード, 口数, 取得単価」。ExcelやGoogleスプレッドシートからコピペ可（タブ区切りも可）。ヘッダ行・列順の違いは自動調整。取得単価は空欄可。")
@@ -826,6 +858,17 @@ def render_portfolio(df, divs):
             "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
             "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
         })
+
+    # 変更を検知してクラウドへ自動保存（書込回数を抑えるため内容ハッシュで差分判定）
+    if cloud_store.enabled() and cloud_store.current_user():
+        rows = json.loads(edited.to_json(orient="records"))  # NaN→null に正規化
+        h = hashlib.md5(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        if st.session_state.get("pf_saved_hash") != h:
+            try:
+                cloud_store.save(rows)
+                st.session_state["pf_saved_hash"] = h
+            except Exception as e:  # noqa
+                st.warning(f"クラウド保存に失敗: {e}")
 
     holds = []
     for _, r in edited.iterrows():

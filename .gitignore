@@ -8,3 +8,5 @@ data/logs/
 # data/jreit.db は コミットする（ホスト側はこれを read-only 参照）
 *.db-wal
 *.db-shm
+# Streamlit secrets（Cloudflare APIトークン等。絶対にcommitしない。Cloud側はダッシュボードのSecretsに登録）
+.streamlit/secrets.toml
