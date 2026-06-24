@@ -359,7 +359,8 @@ def render_dashboard(df, divs):
     c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
     with c_sort:
         sort_key = st.selectbox("並び替え", ["利回り%", "実質利回り%", "乖離%", "リーマン比%",
-                                          "時価総額", "出来高", "コードNo"])
+                                          "時価総額", "出来高", "コードNo"],
+                                key="dash_sort_key")
     with c_pick:
         # session_state に保存済みでなければ「全選択」で初期化（キーが存在しない初回のみ）
         if "use_pick" not in st.session_state:
@@ -370,6 +371,7 @@ def render_dashboard(df, divs):
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
                         key="use_pick")
         only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
+                                     key="dash_only_no_excess",
                                      help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
     with c_avg:
         ex = df[~is_infra(df)]
@@ -387,10 +389,13 @@ def render_dashboard(df, divs):
     # 乖離率の基準（種類＝平均/中央値, 期間＝任意）＋ スポンサー逆引き検索
     d1, d2, d3, d4 = st.columns([1, 1, 1, 3])
     dev_stat = d1.selectbox("乖離の基準", ["平均", "中央値"],
+                            key="dash_dev_stat",
                             help="価格と「直近◯期間の平均/中央値」の乖離率を表示します")
-    dev_num = d2.number_input("期間", min_value=1, max_value=9999, value=200, step=1)
-    dev_unit = d3.selectbox("単位", ["日", "週", "月", "年"])
+    dev_num = d2.number_input("期間", min_value=1, max_value=9999, value=200, step=1,
+                              key="dash_dev_num")
+    dev_unit = d3.selectbox("単位", ["日", "週", "月", "年"], key="dash_dev_unit")
     sponsor_q = d4.text_input("スポンサーで逆引き検索", placeholder="例: 三井不動産 / KKR / 三菱",
+                              key="dash_sponsor_q",
                               help="スポンサー名（部分一致）で銘柄を絞り込み")
     dev_rows = int(dev_num) * UNIT_ROWS[dev_unit]
     dev_ser = deviation_series(dev_stat, dev_rows)   # code -> 乖離%
@@ -687,7 +692,14 @@ def render_comparison(df, divs):
     st.subheader("⚖️ 銘柄比較")
     labels, l2c, c2l = label_maps(df)
     default = [c2l[c] for c in ["8985", "8960", "8963"] if c in c2l][:3]
-    picks = st.multiselect("比較する銘柄（2〜6銘柄を推奨）", labels, default=default, max_selections=6)
+    # session_state に保存済みの選択を復元（ページ遷移後もリセットしない）
+    if "comp_picks" not in st.session_state:
+        st.session_state["comp_picks"] = default
+    else:
+        # データ更新で銘柄が消えた場合は無効値を除去
+        st.session_state["comp_picks"] = [p for p in st.session_state["comp_picks"] if p in labels]
+    picks = st.multiselect("比較する銘柄（2〜6銘柄を推奨）", labels,
+                           default=None, key="comp_picks", max_selections=6)
     if len(picks) < 2:
         st.info("2銘柄以上を選択してください。")
         return
