@@ -816,8 +816,10 @@ def parse_bulk(text: str) -> pd.DataFrame | None:
         for c in rest:
             cc = re.sub(r"[^\d.]", "", c)
             nums.append(float(cc) if cc not in ("", ".") else None)
-        units = nums[0] if len(nums) >= 1 and nums[0] else 1.0
-        cost = nums[1] if len(nums) >= 2 else None
+        # 文字列列（名称等）が None になるので、有効な数値だけ抽出して順番に割り当てる
+        valid_nums = [n for n in nums if n is not None]
+        units = valid_nums[0] if len(valid_nums) >= 1 and valid_nums[0] else 1.0
+        cost = valid_nums[1] if len(valid_nums) >= 2 else None
         rows.append({"コード": code, "口数": units, "取得単価": cost})
     return pd.DataFrame(rows) if rows else None
 
@@ -914,6 +916,8 @@ def render_portfolio(df, divs):
             "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
             "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
         })
+    # 編集内容を session_state に即時反映 → ページ遷移後も手動編集が消えない
+    st.session_state["pf"] = edited
 
     # 変更を検知してクラウドへ自動保存（書込回数を抑えるため内容ハッシュで差分判定）
     if cloud_store.enabled() and cloud_store.current_user():
@@ -956,6 +960,8 @@ def render_portfolio(df, divs):
             "yield_on_cost": (base_pu / cost * 100) if (base_pu and cost) else None,
             "yield_on_value": (base_pu / price * 100) if (base_pu and price) else None,
             "yield": rec["yield_total"], "use_primary": rec["use_primary"],
+            "use_label": rec.get("use_label", rec.get("use_primary", "—")),
+            "type_jp": rec.get("type_jp", "—"),
             "asset_pct": asset_map(rec),
             "fund_ug_pct": rec.get("unrealized_gain_pct"),
         })
@@ -1057,7 +1063,8 @@ def render_portfolio(df, divs):
                         key=lambda h: (h[_sk] is None, -(h[_sk] or 0) if _sd else (h[_sk] or 0)),
                         reverse=False)
     det_rows = [{
-        "コード": h["code"], "名称": h["name"], "口数": fmt(h["units"], 0),
+        "コード": h["code"], "名称": h["name"], "主用途": h["use_label"], "タイプ": h["type_jp"],
+        "口数": fmt(h["units"], 0),
         "評価額(円)": fmt(h["value"], 0),
         "評価損益率": fmt_goshya(h["gain_pct"], "%") if h["gain_pct"] is not None else "—",
         "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
@@ -1067,24 +1074,55 @@ def render_portfolio(df, divs):
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
     } for h in holds_disp]
+    def use_bg_det(assets):
+        """保有明細の主用途セル背景（サマリーと同じ用途色グラデーション）。"""
+        items = [(t, float(p)) for t, p in (assets or {}).items()
+                 if pd.notna(p) and float(p) > 0 and t in ASSET_COLOR]
+        if not items:
+            return ASSET_COLOR["その他"]
+        items.sort(key=lambda x: -x[1])
+        total = sum(p for _, p in items) or 1.0
+        cum, stops = 0.0, []
+        for t, p in items:
+            a = cum / total * 100
+            cum += p
+            stops.append(f"{ASSET_COLOR[t]} {a:.2f}% {cum/total*100:.2f}%")
+        return "linear-gradient(90deg, " + ", ".join(stops) + ")"
+
     if det_rows:
         det_cols = list(det_rows[0].keys())
         det_right = {"口数", "評価額(円)", "評価損益(円)", "年間分配金(円/口)※", "年間分配金合計(円)"}
-        det_center = {"取得利回り", "評価利回り", "評価損益率", "含み益率(ファンド)"}
+        det_center = {"タイプ", "取得利回り", "評価利回り", "評価損益率", "含み益率(ファンド)"}
         det_head = "".join(
             f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
             f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
             for c in det_cols)
         det_html_rows = []
-        for pos, row in enumerate(det_rows):
+        for pos, (row, h) in enumerate(zip(det_rows, holds_disp)):
             row_bg = "#f0f0f0" if pos % 2 == 1 else "#ffffff"
             tds = []
             for c in det_cols:
                 v = row[c]
-                align = "right" if c in det_right else ("center" if c in det_center else "left")
-                tds.append(
-                    f'<td style="background:{row_bg};color:{FONT};text-align:{align};white-space:nowrap;'
-                    f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+                if c == "主用途":
+                    # サマリーと同じ用途カラーグラデーション
+                    bg = use_bg_det(h["asset_pct"])
+                    tds.append(
+                        f'<td style="background:{bg};color:{FONT};font-weight:700;'
+                        f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+                elif c == "タイプ":
+                    t = str(v)
+                    if any(k in t for k in ("総合", "複合", "統合")):
+                        tbg = ASSET_COLOR["その他"]
+                    else:
+                        tbg = next((ASSET_COLOR[ja] for ja in ["オフィス","ホテル","物流","商業","住居","ヘルスケア"] if ja in t), ASSET_COLOR["その他"])
+                    tds.append(
+                        f'<td style="background:{tbg};color:{FONT};font-weight:700;'
+                        f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+                else:
+                    align = "right" if c in det_right else ("center" if c in det_center else "left")
+                    tds.append(
+                        f'<td style="background:{row_bg};color:{FONT};text-align:{align};white-space:nowrap;'
+                        f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
             det_html_rows.append("<tr>" + "".join(tds) + "</tr>")
         det_table_html = (
             '<div style="max-height:420px;overflow:auto;border:1px solid #e0e0e0;border-radius:8px">'
