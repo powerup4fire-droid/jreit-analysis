@@ -1190,7 +1190,9 @@ def render_portfolio(df, divs):
     with _sh2:
         if st.button("リセット", key="_sim_reset", use_container_width=True):
             st.session_state.pop("_sim_prev_edits", None)
-            st.session_state.pop("sim_editor", None)
+            st.session_state.pop("_sim_needs_restore", None)
+            # key を変えて data_editor を強制再マウント（popだけでは不十分）
+            st.session_state["_sim_ver"] = st.session_state.get("_sim_ver", 0) + 1
     st.caption("全銘柄を対象に口数増減を仮入力。変更前後の円グラフで構成比への感度を確認。実際の保有には影響しません。")
 
     # 全銘柄の base_pu / asset_pct を準備（保有中は実値、非保有は yield_base 推計）
@@ -1218,11 +1220,15 @@ def render_portfolio(df, divs):
     _sim_db_key = "v4:" + ",".join(_all_codes)
     if st.session_state.get("_sim_db_key") != _sim_db_key:
         st.session_state["_sim_db_key"] = _sim_db_key
-        st.session_state.pop("sim_editor", None)
         st.session_state.pop("_sim_prev_edits", None)
+        st.session_state["_sim_ver"] = st.session_state.get("_sim_ver", 0) + 1
+
+    # data_editor の key にバージョンを付与。リセット時に番号を上げて強制再マウント。
+    _sim_ver = st.session_state.get("_sim_ver", 0)
+    _editor_key = f"sim_editor_{_sim_ver}"
 
     # _sim_base は常にデフォルト値（"0" / latest_price）。
-    # 同一ページ内の状態は sim_editor（Streamlit ネイティブ）が管理。
+    # 同一ページ内の状態は data_editor ネイティブが管理。
     # ページ遷移またぎは _sim_prev_edits で復元する。
     _sim_rows = []
     _code_to_row = {}   # code → _sim_base 行インデックス
@@ -1241,7 +1247,7 @@ def render_portfolio(df, divs):
         })
     _sim_base = pd.DataFrame(_sim_rows)
 
-    # ページ復帰時: _sim_prev_edits から sim_editor を再構築
+    # ページ復帰時: _sim_prev_edits から data_editor のセッション状態を再構築
     if st.session_state.pop("_sim_needs_restore", False):
         _prev_edits = st.session_state.get("_sim_prev_edits", {})
         _edited_rows = {}
@@ -1261,13 +1267,13 @@ def render_portfolio(df, divs):
                 _entry["単価(円)"] = float(_p)
             if _entry:
                 _edited_rows[_ridx] = _entry
-        st.session_state["sim_editor"] = {
+        st.session_state[_editor_key] = {
             "edited_rows": _edited_rows, "added_rows": [], "deleted_rows": []
         }
 
     sim_edited = st.data_editor(
         _sim_base, use_container_width=True, hide_index=True,
-        key="sim_editor",
+        key=_editor_key,
         disabled=["コード", "銘柄名", "現口数"],
         column_config={
             "増減口数": st.column_config.TextColumn(
