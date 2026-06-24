@@ -299,18 +299,46 @@ def label_maps(df):
 
 def annual_distribution(divs, code):
     """直近12ヶ月ぶんの1口当たり分配金・利益超過分配金を返す。
-    年1回/半期/四半期決算が混在しても正しく年換算できるよう、最新期から12ヶ月内の期を合算。"""
+    投資口分割を自動検出（ウィンドウ内で前期比60%未満の急減）し、
+    スプリット後のデータのみ抽出して決算頻度で年換算する。"""
     d = divs[(divs["code"] == code) & (divs["period_label"] != "latest")].copy()
     if d.empty:
         return None, None
     d["ym"] = d["period_label"].map(lambda l: (lambda k: k[0] * 12 + k[1])(period_key(l)))
-    d = d[d["ym"] > 0]
+    d = d[d["ym"] > 0].sort_values("ym").reset_index(drop=True)
     if d.empty:
         return None, None
     latest = d["ym"].max()
-    win = d[latest - d["ym"] < 12]   # 直近12ヶ月（年1回=1期, 半期=2期, 四半期=4期）
-    tot = win["total_distribution"].sum(skipna=True)
-    exc = win["excess_distribution"].sum(skipna=True)
+    win = d[latest - d["ym"] < 12].reset_index(drop=True)   # 直近12ヶ月
+    if win.empty:
+        return None, None
+
+    # 投資口分割検出: ウィンドウ内で前期比60%未満に急減した場合はスプリット後インデックスを記録
+    split_from = 0
+    for i in range(1, len(win)):
+        prev = win.loc[i - 1, "total_distribution"]
+        curr = win.loc[i, "total_distribution"]
+        if pd.notna(prev) and pd.notna(curr) and prev > 0 and curr / prev < 0.60:
+            split_from = i
+
+    if split_from > 0:
+        post = win.iloc[split_from:].reset_index(drop=True)
+        # 全履歴から決算頻度（期/年）を推定
+        if len(d) >= 2:
+            valid_ivl = d["ym"].diff().dropna()
+            valid_ivl = valid_ivl[valid_ivl > 0]
+            avg_interval = valid_ivl.mean() if len(valid_ivl) > 0 else 6
+        else:
+            avg_interval = 6
+        periods_per_year = max(1, min(round(12 / avg_interval), 12))
+        annual_factor = periods_per_year / len(post)
+        tot = float(post["total_distribution"].sum(skipna=True)) * annual_factor
+        exc_raw = post["excess_distribution"].sum(skipna=True)
+        exc = float(exc_raw) * annual_factor if pd.notna(exc_raw) else 0.0
+    else:
+        tot = win["total_distribution"].sum(skipna=True)
+        exc = win["excess_distribution"].sum(skipna=True)
+
     return (float(tot) if pd.notna(tot) else None,
             float(exc) if pd.notna(exc) else None)
 
@@ -460,6 +488,7 @@ def render_dashboard(df, divs):
     for i in range(len(summary)):
         r = summary.iloc[i]
         code_v = str(r["コード"])
+        row_bg = "#f4f6f8" if i % 2 == 1 else "#ffffff"
         tds = []
         for c in cols:
             v = r[c]
@@ -475,18 +504,18 @@ def render_dashboard(df, divs):
             elif c == "コード":
                 # クリックで下の「個別銘柄」に飛ぶ（?code= をセットして #detail へスクロール）
                 tds.append(
-                    f'<td style="text-align:left;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
+                    f'<td style="background:{row_bg};text-align:left;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
                     f'<a href="?code={code_v}#detail" target="_self" '
                     f'style="color:#1f6feb;font-weight:700;text-decoration:none">{v}</a></td>')
             elif c == "Jリート":
                 tds.append(
-                    f'<td style="text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
+                    f'<td style="background:{row_bg};text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">'
                     f'<a href="https://www.japan-reit.com/meigara/{code_v}/" target="_blank" '
                     f'rel="noopener" style="color:#1f6feb;text-decoration:none">japan-reit ↗</a></td>')
             else:
                 align = "right" if c in right_cols else ("center" if c in center_cols else "left")
                 tds.append(
-                    f'<td style="color:{FONT};text-align:{align};white-space:nowrap;'
+                    f'<td style="background:{row_bg};color:{FONT};text-align:{align};white-space:nowrap;'
                     f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
         rows_html.append("<tr>" + "".join(tds) + "</tr>")
     table_html = (
@@ -892,6 +921,10 @@ def render_portfolio(df, divs):
         price = float(rec["latest_price"]) if pd.notna(rec["latest_price"]) else None
         cost = float(r["取得単価"]) if pd.notna(r["取得単価"]) else None
         annual_pu, excess_pu = annual_distribution(divs, code)
+        # 利益超過分配金を除く基本分配金（利回り計算はこちらベース）
+        base_pu = None
+        if annual_pu is not None:
+            base_pu = annual_pu - (excess_pu or 0.0)
         mval = price * units if price is not None else None
         holds.append({
             "code": code, "name": rec["name"], "units": units, "price": price,
@@ -899,11 +932,14 @@ def render_portfolio(df, divs):
             "acq": (cost * units) if cost is not None else None,
             "gain": ((price - cost) * units) if (price is not None and cost is not None) else None,
             "gain_pct": ((price - cost) / cost * 100) if (price is not None and cost is not None and cost > 0) else None,
+            "annual_pu": annual_pu,
+            "excess_pu": excess_pu,
+            "base_pu": base_pu,                                               # 利益超過除き
+            "base_income": (base_pu * units) if base_pu is not None else None,  # 利益超過除き×口数
             "annual_income": (annual_pu * units) if annual_pu is not None else None,
             "annual_excess": (excess_pu * units) if excess_pu is not None else None,
-            "annual_pu": annual_pu,
-            "yield_on_cost": (annual_pu / cost * 100) if (annual_pu and cost) else None,
-            "yield_on_value": (annual_pu / price * 100) if (annual_pu and price) else None,
+            "yield_on_cost": (base_pu / cost * 100) if (base_pu and cost) else None,
+            "yield_on_value": (base_pu / price * 100) if (base_pu and price) else None,
             "yield": rec["yield_total"], "use_primary": rec["use_primary"],
             "asset_pct": asset_map(rec),
             "fund_ug_pct": rec.get("unrealized_gain_pct"),
@@ -916,22 +952,23 @@ def render_portfolio(df, divs):
     tot_acq = sum(h["acq"] for h in holds if h["acq"] is not None)
     tot_gain = sum(h["gain"] for h in holds if h["gain"] is not None)
     has_cost = any(h["gain"] is not None for h in holds)
-    tot_income = sum(h["annual_income"] for h in holds if h["annual_income"] is not None)
+    tot_income = sum(h["base_income"] for h in holds if h["base_income"] is not None)  # 利益超過除き
     tot_excess = sum(h["annual_excess"] for h in holds if h["annual_excess"] is not None)
     pf_yield = (tot_income / tot_val * 100) if tot_val else None
     pf_yield_on_cost = (tot_income / tot_acq * 100) if (tot_acq and tot_income) else None
 
     m = st.columns(5)
     m[0].metric("評価額合計", fmt(tot_val, 0, " 円"))
-    m[1].metric("評価額ベース利回り", fmt(pf_yield, 2, "%"), help="年間分配金合計 ÷ 評価額合計（実績ベース）")
-    m[2].metric("取得価格ベース利回り", fmt(pf_yield_on_cost, 2, "%"), help="年間分配金合計 ÷ 取得額合計")
-    m[3].metric("年間分配金（見込み）", fmt(tot_income, 0, " 円"), help="直近2期＝1年の実績を据え置いた推定")
+    m[1].metric("評価額ベース利回り", fmt(pf_yield, 2, "%"), help="年間分配金（利益超過除く）÷ 評価額合計")
+    m[2].metric("取得価格ベース利回り", fmt(pf_yield_on_cost, 2, "%"), help="年間分配金（利益超過除く）÷ 取得額合計")
+    m[3].metric("年間分配金（利益超過除く）", fmt(tot_income, 0, " 円"), help="直近実績の利益超過分配金を除く年間分配金")
     m[4].metric("含み益", fmt(tot_gain, 0, " 円") if has_cost else "—",
                 f"取得額 {fmt(tot_acq,0)} 円" if has_cost else "取得単価未入力",
                 delta_color="normal")
-    if tot_income:
-        st.caption(f"うち利益超過分配（年間・推定）: {fmt(tot_excess,0)} 円"
-                   f"（分配金の {tot_excess / tot_income * 100:.1f}%）")
+    if tot_excess:
+        tot_total = sum(h["annual_income"] for h in holds if h["annual_income"] is not None)
+        st.caption(f"利益超過分配（年間・推定）: {fmt(tot_excess,0)} 円"
+                   f"（分配金合計 {fmt(tot_total,0)} 円 の {tot_excess / tot_total * 100:.1f}%）")
 
     # 分配金の累計見込み（直近実績を据え置いた推定）
     st.markdown("**分配金 累計見込み（推定）**")
@@ -948,46 +985,83 @@ def render_portfolio(df, divs):
     st.dataframe(sched, use_container_width=True, hide_index=True)
     st.caption("※ 本日を基準（0円）に、直近実績の年間分配金が今後も継続すると仮定した推定値です。")
 
-    # 用途構成（評価額加重）
-    st.markdown("**運用物件タイプ（評価額加重）**")
-    agg = {}
-    wsum = 0.0
+    # 用途構成（評価額加重 + 分配金加重）の2種グラフ
+    st.markdown("**運用物件タイプ**")
+    # 評価額ベース
+    agg_val = {}
+    wsum_val = 0.0
     for h in holds:
         if h["value"] is None:
             continue
         for ja, v in h["asset_pct"].items():
-            agg[ja] = agg.get(ja, 0.0) + float(v) / 100.0 * h["value"]
-        wsum += h["value"]
-    amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
-    if amap:
-        donut_chart(amap, height=220, inside_labels=True)
-        st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1])))
-    else:
-        st.caption("構成データなし")
+            agg_val[ja] = agg_val.get(ja, 0.0) + float(v) / 100.0 * h["value"]
+        wsum_val += h["value"]
+    amap_val = {k: v / wsum_val * 100 for k, v in agg_val.items() if wsum_val and v > 0}
+    # 分配金ベース（利益超過除く）
+    agg_dist = {}
+    wsum_dist = 0.0
+    for h in holds:
+        if h["base_income"] is None:
+            continue
+        for ja, v in h["asset_pct"].items():
+            agg_dist[ja] = agg_dist.get(ja, 0.0) + float(v) / 100.0 * h["base_income"]
+        wsum_dist += h["base_income"]
+    amap_dist = {k: v / wsum_dist * 100 for k, v in agg_dist.items() if wsum_dist and v > 0}
 
+    gc1, gc2 = st.columns(2)
+    with gc1:
+        st.caption("評価額ベース")
+        if amap_val:
+            donut_chart(amap_val, height=220, inside_labels=True)
+            st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap_val.items(), key=lambda x: -x[1])))
+        else:
+            st.caption("構成データなし")
+    with gc2:
+        st.caption("分配金ベース（利益超過分配金除く）")
+        if amap_dist:
+            donut_chart(amap_dist, height=220, inside_labels=True)
+            st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap_dist.items(), key=lambda x: -x[1])))
+        else:
+            st.caption("構成データなし")
+
+    # 保有明細（HTMLテーブル → 並び替え後も交互行着色が崩れない）
     st.markdown("**保有明細**")
-    det = pd.DataFrame([{
-        "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
+    det_rows = [{
+        "コード": h["code"], "名称": h["name"], "口数": fmt(h["units"], 0),
         "評価額(円)": fmt(h["value"], 0),
         "評価損益率": fmt_goshya(h["gain_pct"], "%") if h["gain_pct"] is not None else "—",
         "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
-        "年間分配金(円/口)": fmt(h["annual_pu"], 0) if h["annual_pu"] is not None else "—",
-        "年間分配金合計(円)": fmt(h["annual_income"], 0),
+        "年間分配金(円/口)※": fmt(h["base_pu"], 0) if h["base_pu"] is not None else "—",
+        "年間分配金合計(円)": fmt(h["base_income"], 0) if h["base_income"] is not None else "—",
         "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
-    } for h in holds])
-
-    def _alt_row_style(df):
-        styles = pd.DataFrame("", index=df.index, columns=df.columns)
-        for i in df.index:
-            if i % 2 == 1:
-                styles.loc[i] = "background-color: #f0f0f0"
-        return styles
-
-    st.dataframe(det.style.apply(_alt_row_style, axis=None),
-                 use_container_width=True, hide_index=True)
-    st.caption("※ 年間分配金は直近12ヶ月の実績合計。取得利回り＝年間分配金(円/口)÷取得単価、評価利回り＝年間分配金(円/口)÷現在株価。")
+    } for h in holds]
+    if det_rows:
+        det_cols = list(det_rows[0].keys())
+        det_right = {"口数", "評価額(円)", "評価損益(円)", "年間分配金(円/口)※", "年間分配金合計(円)"}
+        det_center = {"取得利回り", "評価利回り", "評価損益率", "含み益率(ファンド)"}
+        det_head = "".join(
+            f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
+            f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
+            for c in det_cols)
+        det_html_rows = []
+        for pos, row in enumerate(det_rows):
+            row_bg = "#f0f0f0" if pos % 2 == 1 else "#ffffff"
+            tds = []
+            for c in det_cols:
+                v = row[c]
+                align = "right" if c in det_right else ("center" if c in det_center else "left")
+                tds.append(
+                    f'<td style="background:{row_bg};color:{FONT};text-align:{align};white-space:nowrap;'
+                    f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+            det_html_rows.append("<tr>" + "".join(tds) + "</tr>")
+        det_table_html = (
+            '<div style="max-height:420px;overflow:auto;border:1px solid #e0e0e0;border-radius:8px">'
+            '<table style="border-collapse:collapse;font-size:13px;width:100%">'
+            f'<thead><tr>{det_head}</tr></thead><tbody>{"".join(det_html_rows)}</tbody></table></div>')
+        st.markdown(det_table_html, unsafe_allow_html=True)
+    st.caption("※ 年間分配金は直近12ヶ月の実績（利益超過分配金を除く）。投資口分割を自動検出してスプリット後の期を年換算。取得/評価利回りも同ベース。")
 
 
 # ===========================================================================
