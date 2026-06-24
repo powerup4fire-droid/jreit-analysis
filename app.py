@@ -357,22 +357,29 @@ def render_dashboard(df, divs):
     st.subheader("📋 サマリ")
     uses = sorted(df["use_primary"].dropna().unique().tolist())
     c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
+    # ── シャドウ変数 (ウィジェットキーではなく通常変数として保存 → ページ遷移後も消えない) ──
+    _SORT_OPTS = ["利回り%", "実質利回り%", "乖離%", "リーマン比%", "時価総額", "出来高", "コードNo"]
+    st.session_state.setdefault("_sv_sort", _SORT_OPTS[0])
+    st.session_state.setdefault("_sv_no_excess", False)
+    # use_pick はシャドウキー _sv_use_pick で管理
+    if "_sv_use_pick" not in st.session_state:
+        st.session_state["_sv_use_pick"] = list(uses)
+
     with c_sort:
-        sort_key = st.selectbox("並び替え", ["利回り%", "実質利回り%", "乖離%", "リーマン比%",
-                                          "時価総額", "出来高", "コードNo"],
-                                key="dash_sort_key")
+        sort_key = st.selectbox("並び替え", _SORT_OPTS,
+                                index=_SORT_OPTS.index(st.session_state["_sv_sort"]))
+        st.session_state["_sv_sort"] = sort_key
     with c_pick:
-        # session_state に保存済みでなければ「全選択」で初期化（キーが存在しない初回のみ）
-        if "use_pick" not in st.session_state:
-            st.session_state["use_pick"] = list(uses)
-        # データ更新で用途が変わった場合は無効値を除去
-        _valid = [u for u in st.session_state["use_pick"] if u in uses]
+        # ウィジェットキー use_pick をシャドウから毎回復元（ページ遷移で消えても復元される）
+        _valid = [u for u in st.session_state["_sv_use_pick"] if u in uses]
         st.session_state["use_pick"] = _valid if _valid else list(uses)
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
                         key="use_pick")
-        only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
-                                     key="dash_only_no_excess",
+        st.session_state["_sv_use_pick"] = list(pick) if pick else list(st.session_state["use_pick"])
+        only_no_excess = st.checkbox("利益超過分配金なしのみ",
+                                     value=st.session_state["_sv_no_excess"],
                                      help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
+        st.session_state["_sv_no_excess"] = only_no_excess
     with c_avg:
         ex = df[~is_infra(df)]
         avg = ex["yield_total"].mean()
@@ -388,15 +395,27 @@ def render_dashboard(df, divs):
 
     # 乖離率の基準（種類＝平均/中央値, 期間＝任意）＋ スポンサー逆引き検索
     d1, d2, d3, d4 = st.columns([1, 1, 1, 3])
-    dev_stat = d1.selectbox("乖離の基準", ["平均", "中央値"],
-                            key="dash_dev_stat",
+    _STAT_OPTS = ["平均", "中央値"]
+    _UNIT_OPTS = ["日", "週", "月", "年"]
+    st.session_state.setdefault("_sv_dev_stat", _STAT_OPTS[0])
+    st.session_state.setdefault("_sv_dev_num", 200)
+    st.session_state.setdefault("_sv_dev_unit", _UNIT_OPTS[0])
+    st.session_state.setdefault("_sv_sponsor_q", "")
+    dev_stat = d1.selectbox("乖離の基準", _STAT_OPTS,
+                            index=_STAT_OPTS.index(st.session_state["_sv_dev_stat"]),
                             help="価格と「直近◯期間の平均/中央値」の乖離率を表示します")
-    dev_num = d2.number_input("期間", min_value=1, max_value=9999, value=200, step=1,
-                              key="dash_dev_num")
-    dev_unit = d3.selectbox("単位", ["日", "週", "月", "年"], key="dash_dev_unit")
-    sponsor_q = d4.text_input("スポンサーで逆引き検索", placeholder="例: 三井不動産 / KKR / 三菱",
-                              key="dash_sponsor_q",
+    st.session_state["_sv_dev_stat"] = dev_stat
+    dev_num = d2.number_input("期間", min_value=1, max_value=9999,
+                              value=st.session_state["_sv_dev_num"], step=1)
+    st.session_state["_sv_dev_num"] = int(dev_num)
+    dev_unit = d3.selectbox("単位", _UNIT_OPTS,
+                            index=_UNIT_OPTS.index(st.session_state["_sv_dev_unit"]))
+    st.session_state["_sv_dev_unit"] = dev_unit
+    sponsor_q = d4.text_input("スポンサーで逆引き検索",
+                              value=st.session_state["_sv_sponsor_q"],
+                              placeholder="例: 三井不動産 / KKR / 三菱",
                               help="スポンサー名（部分一致）で銘柄を絞り込み")
+    st.session_state["_sv_sponsor_q"] = sponsor_q
     dev_rows = int(dev_num) * UNIT_ROWS[dev_unit]
     dev_ser = deviation_series(dev_stat, dev_rows)   # code -> 乖離%
 
@@ -691,15 +710,15 @@ def donut_chart(amap: dict, height=300, legend=True, inside_labels=False):
 def render_comparison(df, divs):
     st.subheader("⚖️ 銘柄比較")
     labels, l2c, c2l = label_maps(df)
-    default = [c2l[c] for c in ["8985", "8960", "8963"] if c in c2l][:3]
-    # session_state に保存済みの選択を復元（ページ遷移後もリセットしない）
-    if "comp_picks" not in st.session_state:
-        st.session_state["comp_picks"] = default
+    _default = [c2l[c] for c in ["8985", "8960", "8963"] if c in c2l][:3]
+    # シャドウ変数で選択を保持（ウィジェットキーはページ遷移で消えるため使わない）
+    if "_sv_comp_picks" not in st.session_state:
+        st.session_state["_sv_comp_picks"] = _default
     else:
-        # データ更新で銘柄が消えた場合は無効値を除去
-        st.session_state["comp_picks"] = [p for p in st.session_state["comp_picks"] if p in labels]
+        st.session_state["_sv_comp_picks"] = [p for p in st.session_state["_sv_comp_picks"] if p in labels]
     picks = st.multiselect("比較する銘柄（2〜6銘柄を推奨）", labels,
-                           default=None, key="comp_picks", max_selections=6)
+                           default=st.session_state["_sv_comp_picks"], max_selections=6)
+    st.session_state["_sv_comp_picks"] = picks
     if len(picks) < 2:
         st.info("2銘柄以上を選択してください。")
         return
