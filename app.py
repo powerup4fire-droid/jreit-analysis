@@ -370,12 +370,14 @@ def render_dashboard(df, divs):
                                 index=_SORT_OPTS.index(st.session_state["_sv_sort"]))
         st.session_state["_sv_sort"] = sort_key
     with c_pick:
-        # ウィジェットキー use_pick をシャドウから毎回復元（ページ遷移で消えても復元される）
-        _valid = [u for u in st.session_state["_sv_use_pick"] if u in uses]
-        st.session_state["use_pick"] = _valid if _valid else list(uses)
+        # "use_pick" が session_state にない = ページ遷移後の初回描画 → シャドウから復元
+        # "use_pick" が session_state にある = ユーザー操作後の再描画 → 触らない（クリックを殺さない）
+        if "use_pick" not in st.session_state:
+            _valid = [u for u in st.session_state["_sv_use_pick"] if u in uses]
+            st.session_state["use_pick"] = _valid if _valid else list(uses)
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
                         key="use_pick")
-        st.session_state["_sv_use_pick"] = list(pick) if pick else list(st.session_state["use_pick"])
+        st.session_state["_sv_use_pick"] = list(pick) if pick is not None else list(st.session_state["use_pick"])
         only_no_excess = st.checkbox("利益超過分配金なしのみ",
                                      value=st.session_state["_sv_no_excess"],
                                      help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
@@ -711,14 +713,15 @@ def render_comparison(df, divs):
     st.subheader("⚖️ 銘柄比較")
     labels, l2c, c2l = label_maps(df)
     _default = [c2l[c] for c in ["8985", "8960", "8963"] if c in c2l][:3]
-    # シャドウ変数で選択を保持（ウィジェットキーはページ遷移で消えるため使わない）
-    if "_sv_comp_picks" not in st.session_state:
-        st.session_state["_sv_comp_picks"] = _default
-    else:
-        st.session_state["_sv_comp_picks"] = [p for p in st.session_state["_sv_comp_picks"] if p in labels]
+    # "comp_picks" が session_state にない = ページ遷移後 → シャドウから復元してセット
+    # "comp_picks" が session_state にある = ユーザー操作中 → 触らない
+    if "comp_picks" not in st.session_state:
+        _saved = st.session_state.get("_sv_comp_picks", _default)
+        st.session_state["comp_picks"] = [p for p in _saved if p in labels] or _default
     picks = st.multiselect("比較する銘柄（2〜6銘柄を推奨）", labels,
-                           default=st.session_state["_sv_comp_picks"], max_selections=6)
-    st.session_state["_sv_comp_picks"] = picks
+                           key="comp_picks", default=None, max_selections=6)
+    # ウィジェット操作後に session_state["comp_picks"] が更新されるのでシャドウにも同期
+    st.session_state["_sv_comp_picks"] = list(st.session_state["comp_picks"])
     if len(picks) < 2:
         st.info("2銘柄以上を選択してください。")
         return
