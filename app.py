@@ -1026,6 +1026,19 @@ def render_portfolio(df, divs):
 
     # 保有明細（HTMLテーブル → 並び替え後も交互行着色が崩れない）
     st.markdown("**保有明細**")
+    det_sort_opts = {
+        "評価額 ↓": ("value", True), "評価額 ↑": ("value", False),
+        "評価損益 ↓": ("gain", True), "評価損益 ↑": ("gain", False),
+        "評価損益率 ↓": ("gain_pct", True), "評価損益率 ↑": ("gain_pct", False),
+        "取得利回り ↓": ("yield_on_cost", True), "評価利回り ↓": ("yield_on_value", True),
+        "コード順": ("code", False),
+    }
+    det_sort_sel = st.selectbox("並び替え", list(det_sort_opts.keys()), index=0, key="det_sort",
+                                label_visibility="collapsed")
+    _sk, _sd = det_sort_opts[det_sort_sel]
+    holds_disp = sorted(holds,
+                        key=lambda h: (h[_sk] is None, -(h[_sk] or 0) if _sd else (h[_sk] or 0)),
+                        reverse=False)
     det_rows = [{
         "コード": h["code"], "名称": h["name"], "口数": fmt(h["units"], 0),
         "評価額(円)": fmt(h["value"], 0),
@@ -1036,7 +1049,7 @@ def render_portfolio(df, divs):
         "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
-    } for h in holds]
+    } for h in holds_disp]
     if det_rows:
         det_cols = list(det_rows[0].keys())
         det_right = {"口数", "評価額(円)", "評価損益(円)", "年間分配金(円/口)※", "年間分配金合計(円)"}
