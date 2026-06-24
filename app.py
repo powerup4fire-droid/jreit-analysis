@@ -226,40 +226,68 @@ def fetch_bunpai(code: str) -> list:
 def dist_per_year(holds: list, target_years: list[int]) -> dict[int, float]:
     """各保有銘柄の bunpai.json から振込年ごとの分配金合計（円）を返す。
     期末日 + 2ヶ月 を振込月と見なし、その年に計上。
-    取得失敗・データなし銘柄は年間分配金（公式利回りベース）で補完。"""
+    予想が途中までしかない年は直近 estimate で不足期数を補完。"""
     totals = {y: 0.0 for y in target_years}
     for h in holds:
         data = fetch_bunpai(h["code"])
-        # 期末日→振込年のマッピング: {期末日str: (振込年, 分配金額/口)}
-        if data:
-            # 年ごとの合算
-            yr_map: dict[int, float] = {}
-            for entry in data:
-                date_str = entry.get("date", "")
-                amount = entry.get("result") if entry.get("result") is not None else entry.get("estimate")
-                if not date_str or amount is None:
-                    continue
-                try:
-                    d = dt.date.fromisoformat(date_str)
-                except ValueError:
-                    continue
-                # 支払月 = 期末日 + 2ヶ月
-                pay_month = d.month + 2
-                pay_year  = d.year + (pay_month - 1) // 12
-                pay_month = (pay_month - 1) % 12 + 1  # noqa: F841 (unused but for clarity)
-                if pay_year in target_years:
-                    yr_map[pay_year] = yr_map.get(pay_year, 0.0) + float(amount)
-            for y in target_years:
-                if y in yr_map:
-                    totals[y] += yr_map[y] * h["units"]
-                elif h["base_pu"] is not None:
-                    # 来期以降データなし → 年間分配金で補完
-                    totals[y] += h["base_pu"] * h["units"]
-        else:
-            # 取得失敗 → 年間分配金で補完
+        if not data:
+            # 取得失敗 → 年間分配金（公式利回りベース）で補完
             if h["base_pu"] is not None:
                 for y in target_years:
                     totals[y] += h["base_pu"] * h["units"]
+            continue
+
+        # 全履歴から年あたり期数を推定（過去データの平均間隔）
+        all_dates = sorted(
+            dt.date.fromisoformat(e["date"])
+            for e in data if e.get("date")
+        )
+        if len(all_dates) >= 2:
+            intervals = [(all_dates[i+1] - all_dates[i]).days
+                         for i in range(min(8, len(all_dates) - 1))]
+            avg_days = sum(intervals) / len(intervals)
+            periods_per_yr = max(1, round(365 / avg_days))
+        else:
+            periods_per_yr = 2  # デフォルト半期
+
+        # 直近の estimate（未来分の補完用）
+        last_estimate = next(
+            (e["estimate"] for e in reversed(data)
+             if e.get("estimate") is not None),
+            h["base_pu"]   # フォールバック
+        )
+
+        # 振込年ごとに期数と合計金額を集計
+        yr_amounts: dict[int, list[float]] = {}
+        for entry in data:
+            date_str = entry.get("date", "")
+            amount = (entry["result"] if entry.get("result") is not None
+                      else entry.get("estimate"))
+            if not date_str or amount is None:
+                continue
+            try:
+                d = dt.date.fromisoformat(date_str)
+            except ValueError:
+                continue
+            pay_month = d.month + 2
+            pay_year  = d.year + (pay_month - 1) // 12
+            if pay_year in target_years:
+                yr_amounts.setdefault(pay_year, []).append(float(amount))
+
+        for y in target_years:
+            got = yr_amounts.get(y, [])
+            if got:
+                total_pu = sum(got)
+                # 不足期数を直近 estimate で補完
+                missing = max(0, periods_per_yr - len(got))
+                if missing and last_estimate is not None:
+                    total_pu += float(last_estimate) * missing
+            elif h["base_pu"] is not None:
+                # 当該年に予想データが一件もない → 公式年間分配金で補完
+                total_pu = h["base_pu"]
+            else:
+                continue
+            totals[y] += total_pu * h["units"]
     return totals
 
 
