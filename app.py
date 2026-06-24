@@ -888,6 +888,7 @@ def render_portfolio(df, divs):
             "cost": cost, "value": mval,
             "acq": (cost * units) if cost is not None else None,
             "gain": ((price - cost) * units) if (price is not None and cost is not None) else None,
+            "gain_pct": ((price - cost) / cost * 100) if (price is not None and cost is not None and cost > 0) else None,
             "annual_income": (annual_pu * units) if annual_pu is not None else None,
             "annual_excess": (excess_pu * units) if excess_pu is not None else None,
             "annual_pu": annual_pu,
@@ -958,14 +959,24 @@ def render_portfolio(df, divs):
     det = pd.DataFrame([{
         "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
         "評価額(円)": fmt(h["value"], 0),
-        "含み益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
+        "評価損益率": fmt(h["gain_pct"], 2, "%") if h["gain_pct"] is not None else "—",
+        "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
         "年間分配金(円/口)": fmt(h["annual_pu"], 0) if h["annual_pu"] is not None else "—",
         "年間分配金合計(円)": fmt(h["annual_income"], 0),
         "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
     } for h in holds])
-    st.dataframe(det, use_container_width=True, hide_index=True)
+
+    def _alt_col_style(df):
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        for i, col in enumerate(df.columns):
+            if i % 2 == 1:
+                styles[col] = "background-color: #f0f0f0"
+        return styles
+
+    st.dataframe(det.style.apply(_alt_col_style, axis=None),
+                 use_container_width=True, hide_index=True)
     st.caption("※ 年間分配金は直近12ヶ月の実績合計。取得利回り＝年間分配金(円/口)÷取得単価、評価利回り＝年間分配金(円/口)÷現在株価。")
 
 
