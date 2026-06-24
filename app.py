@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import altair as alt   # Streamlit同梱（追加インストール不要）
 import cloud_store      # Cloudflare KV 永続化（ログインユーザー単位・端末間同期）
 
@@ -1438,11 +1439,11 @@ def main():
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
 
-    # Smart Header: JS がネイティブの segmented_control ボタンを代理クリックすることで
-    # Streamlit のセッション状態を壊さずに fixed ナビを実現する。
+    # ── Smart Header CSS ─────────────────────────────────────────────────────
+    # st.markdown で CSS のみ注入（DOMPurify が script を除去するため JS はここに書かない）
     st.markdown("""
 <style>
-/* ── Smart Header ───────────────────────────────── */
+/* ── Smart Header ── */
 #sn-desktop {
     position: fixed;
     right: 12px;
@@ -1490,8 +1491,9 @@ def main():
 .sn-btn.sn-active { background: #ff4b4b; color: #fff; }
 .sn-btn:hover:not(.sn-active) { background: #e5e7eb; }
 
-/* 元の segmented_control を画面外に退避（DOM は残しておき JS でクリック可能に） */
-div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
+/* 元の segmented_control を画面外に退避（DOM は残し JS からクリック可能にする） */
+div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]),
+div[data-testid="stElementContainer"]:has([data-testid="stSegmentedControl"]) {
     position: absolute !important;
     left: -9999px !important;
     height: 0 !important;
@@ -1499,6 +1501,13 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
     opacity: 0 !important;
     pointer-events: none !important;
 }
+
+/* Manage app ボタン・フッター非表示 */
+[data-testid="manage-app-button"],
+[data-testid="stDeployButton"],
+.stDeployButton,
+#MainMenu,
+footer[data-testid="stFooter"] { display: none !important; }
 
 @media (max-width: 767px) {
     #sn-desktop { display: none !important; }
@@ -1508,15 +1517,23 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
     #sn-mobile { display: none !important; }
 }
 </style>
+""", unsafe_allow_html=True)
+
+    # ── Smart Header JS ──────────────────────────────────────────────────────
+    # components.html は iframe で実行される。iframe は allow-same-origin のため
+    # window.parent.document でホストページの DOM を操作できる。
+    components.html("""
 <script>
 (function(){
-    if (window._snInit) return;
-    window._snInit = true;
+    var p = window.parent;
+    if (p._snInit) return;
+    p._snInit = true;
 
     var PAGES = ['📋 ダッシュボード', '⚖️ 銘柄比較', '💼 マイポートフォリオ'];
+    var pd = p.document;
 
     function getStBtns() {
-        return document.querySelectorAll('[data-testid="stSegmentedControl"] button');
+        return pd.querySelectorAll('[data-testid="stSegmentedControl"] button');
     }
 
     function getActiveIdx() {
@@ -1527,11 +1544,11 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
                 b.getAttribute('aria-checked') === 'true' ||
                 b.getAttribute('aria-selected') === 'true') { return i; }
         }
-        return window._snPage || 0;
+        return p._snPage || 0;
     }
 
     function syncActive(idx) {
-        document.querySelectorAll('.sn-btn').forEach(function(b, i) {
+        pd.querySelectorAll('.sn-btn').forEach(function(b, i) {
             b.classList.toggle('sn-active', i === idx);
         });
     }
@@ -1539,41 +1556,36 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
     function clickPage(idx) {
         var btns = getStBtns();
         if (btns[idx]) btns[idx].click();
-        window._snPage = idx;
+        p._snPage = idx;
         syncActive(idx);
     }
 
     function buildNav(id) {
-        if (document.getElementById(id)) return;
-        var nav = document.createElement('div');
+        if (pd.getElementById(id)) return;
+        var nav = pd.createElement('div');
         nav.id = id;
-        var labels = PAGES;
-        labels.forEach(function(name, i) {
-            var btn = document.createElement('button');
+        PAGES.forEach(function(name, i) {
+            var btn = pd.createElement('button');
             btn.className = 'sn-btn';
             btn.textContent = name;
             (function(idx){ btn.addEventListener('click', function(){ clickPage(idx); }); })(i);
             nav.appendChild(btn);
         });
-        document.body.appendChild(nav);
+        pd.body.appendChild(nav);
     }
 
     var lastY = 0, ticking = false;
     function onScroll() {
         if (ticking) return;
         ticking = true;
-        requestAnimationFrame(function() {
-            var nav = document.getElementById('sn-mobile');
+        p.requestAnimationFrame(function() {
+            var nav = pd.getElementById('sn-mobile');
             if (!nav) { ticking = false; return; }
-            var el = document.querySelector('[data-testid="stMain"]');
-            var y = el ? el.scrollTop : (window.pageYOffset || document.documentElement.scrollTop);
-            if (y <= 30) {
-                nav.classList.remove('sn-hide');
-            } else if (y - lastY > 8) {
-                nav.classList.add('sn-hide');
-            } else if (lastY - y > 8) {
-                nav.classList.remove('sn-hide');
-            }
+            var el = pd.querySelector('[data-testid="stMain"]');
+            var y = el ? el.scrollTop : (p.pageYOffset || pd.documentElement.scrollTop);
+            if (y <= 30) nav.classList.remove('sn-hide');
+            else if (y - lastY > 8) nav.classList.add('sn-hide');
+            else if (lastY - y > 8) nav.classList.remove('sn-hide');
             lastY = y;
             ticking = false;
         });
@@ -1584,12 +1596,12 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
         buildNav('sn-mobile');
         syncActive(getActiveIdx());
 
-        var mainEl = document.querySelector('[data-testid="stMain"]');
+        var mainEl = pd.querySelector('[data-testid="stMain"]');
         if (mainEl) mainEl.addEventListener('scroll', onScroll, {passive: true});
-        window.addEventListener('scroll', onScroll, {passive: true});
+        p.addEventListener('scroll', onScroll, {passive: true});
 
-        var obs = new MutationObserver(function() { syncActive(getActiveIdx()); });
-        obs.observe(document.body, {
+        var obs = new p.MutationObserver(function() { syncActive(getActiveIdx()); });
+        obs.observe(pd.body, {
             subtree: true, attributes: true,
             attributeFilter: ['aria-pressed', 'aria-checked', 'aria-selected']
         });
@@ -1597,13 +1609,13 @@ div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
 
     var tries = 0;
     function tryInit() {
-        if (document.querySelector('[data-testid="stSegmentedControl"]')) { init(); }
-        else if (tries++ < 40) { setTimeout(tryInit, 150); }
+        if (pd.querySelector('[data-testid="stSegmentedControl"]')) { init(); }
+        else if (tries++ < 40) { p.setTimeout(tryInit, 150); }
     }
     tryInit();
 })();
 </script>
-""", unsafe_allow_html=True)
+""", height=0)
 
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
     page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
