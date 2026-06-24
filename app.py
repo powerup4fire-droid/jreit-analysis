@@ -968,14 +968,14 @@ def render_portfolio(df, divs):
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
     } for h in holds])
 
-    def _alt_col_style(df):
+    def _alt_row_style(df):
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
-        for i, col in enumerate(df.columns):
+        for i in df.index:
             if i % 2 == 1:
-                styles[col] = "background-color: #f0f0f0"
+                styles.loc[i] = "background-color: #f0f0f0"
         return styles
 
-    st.dataframe(det.style.apply(_alt_col_style, axis=None),
+    st.dataframe(det.style.apply(_alt_row_style, axis=None),
                  use_container_width=True, hide_index=True)
     st.caption("※ 年間分配金は直近12ヶ月の実績合計。取得利回り＝年間分配金(円/口)÷取得単価、評価利回り＝年間分配金(円/口)÷現在株価。")
 
