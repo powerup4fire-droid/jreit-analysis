@@ -361,8 +361,14 @@ def render_dashboard(df, divs):
         sort_key = st.selectbox("並び替え", ["利回り%", "実質利回り%", "乖離%", "リーマン比%",
                                           "時価総額", "出来高", "コードNo"])
     with c_pick:
+        # session_state に保存済みでなければ「全選択」で初期化（キーが存在しない初回のみ）
+        if "use_pick" not in st.session_state:
+            st.session_state["use_pick"] = list(uses)
+        # データ更新で用途が変わった場合は無効値を除去
+        _valid = [u for u in st.session_state["use_pick"] if u in uses]
+        st.session_state["use_pick"] = _valid if _valid else list(uses)
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
-                        default=uses, key="use_pick")
+                        key="use_pick")
         only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
                                      help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
     with c_avg:
