@@ -1323,10 +1323,10 @@ def render_portfolio(df, divs):
         "評価額(円)": fmt(h["value"], 0),
         "評価損益率": fmt_goshya(h["gain_pct"], "%") if h["gain_pct"] is not None else "—",
         "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
-        "年間分配金(円/口)※": fmt(h["base_pu"], 0) if h["base_pu"] is not None else "—",
-        "年間分配金合計(円)": fmt(h["base_income"], 0) if h["base_income"] is not None else "—",
         "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
+        "年間分配金(円/口)※": fmt(h["base_pu"], 0) if h["base_pu"] is not None else "—",
+        "年間分配金合計(円)": fmt(h["base_income"], 0) if h["base_income"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
     } for h in holds_disp]
     def use_bg_det(assets):
