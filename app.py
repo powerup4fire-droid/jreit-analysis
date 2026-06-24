@@ -208,6 +208,62 @@ def period_key(label):
 
 
 # ---------------------------------------------------------------------------
+# 分配金見込み: japan-reit.com bunpai.json 取得
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600 * 6)
+def fetch_bunpai(code: str) -> list:
+    """japan-reit.com の bunpai.json を取得。失敗時は空リスト。6時間キャッシュ。"""
+    import urllib.request
+    url = f"https://www.japan-reit.com/meigara/{code}/bunpai.json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return []
+
+
+def dist_per_year(holds: list, target_years: list[int]) -> dict[int, float]:
+    """各保有銘柄の bunpai.json から振込年ごとの分配金合計（円）を返す。
+    期末日 + 2ヶ月 を振込月と見なし、その年に計上。
+    取得失敗・データなし銘柄は年間分配金（公式利回りベース）で補完。"""
+    totals = {y: 0.0 for y in target_years}
+    for h in holds:
+        data = fetch_bunpai(h["code"])
+        # 期末日→振込年のマッピング: {期末日str: (振込年, 分配金額/口)}
+        if data:
+            # 年ごとの合算
+            yr_map: dict[int, float] = {}
+            for entry in data:
+                date_str = entry.get("date", "")
+                amount = entry.get("result") if entry.get("result") is not None else entry.get("estimate")
+                if not date_str or amount is None:
+                    continue
+                try:
+                    d = dt.date.fromisoformat(date_str)
+                except ValueError:
+                    continue
+                # 支払月 = 期末日 + 2ヶ月
+                pay_month = d.month + 2
+                pay_year  = d.year + (pay_month - 1) // 12
+                pay_month = (pay_month - 1) % 12 + 1  # noqa: F841 (unused but for clarity)
+                if pay_year in target_years:
+                    yr_map[pay_year] = yr_map.get(pay_year, 0.0) + float(amount)
+            for y in target_years:
+                if y in yr_map:
+                    totals[y] += yr_map[y] * h["units"]
+                elif h["base_pu"] is not None:
+                    # 来期以降データなし → 年間分配金で補完
+                    totals[y] += h["base_pu"] * h["units"]
+        else:
+            # 取得失敗 → 年間分配金で補完
+            if h["base_pu"] is not None:
+                for y in target_years:
+                    totals[y] += h["base_pu"] * h["units"]
+    return totals
+
+
+# ---------------------------------------------------------------------------
 # 共通: データフレーム整形
 # ---------------------------------------------------------------------------
 def load_overrides() -> dict:
@@ -1044,16 +1100,18 @@ def render_portfolio(df, divs):
         st.caption(f"利益超過分配（年間・推定）: {fmt(tot_excess,0)} 円"
                    f"（分配金合計 {fmt(tot_total,0)} 円 の {tot_excess / tot_total * 100:.1f}%）")
 
-    # 分配金の単年度見込み（各年とも満額。振込月が属する年に計上・日数按分なし）
-    st.markdown("**分配金 単年度見込み（利益超過除く）**")
+    # 分配金の単年度見込み（japan-reit.com bunpai.json 来期・来来期予想を反映）
+    st.markdown("**分配金 単年度見込み**")
     today = dt.date.today()
-    sched = pd.DataFrame({
-        "年":         [f"{today.year}年", f"{today.year + 1}年", f"{today.year + 2}年"],
-        "分配金(円)": [f"{tot_income:,.0f}"] * 3,
-    })
-    st.dataframe(sched, use_container_width=True, hide_index=True)
-    st.caption("※ 公式分配金利回りベースの年間分配金（利益超過分配金を除く）。"
-               "各分配金は振込月が属する年に満額計上（日数按分なし）。")
+    target_years = [today.year, today.year + 1, today.year + 2]
+    with st.spinner("分配金データ取得中…"):
+        yr_dist = dist_per_year(holds, target_years)
+    sched_rows = []
+    for y in target_years:
+        sched_rows.append({"年": f"{y}年", "分配金(円)": f"{yr_dist[y]:,.0f}"})
+    st.dataframe(pd.DataFrame(sched_rows), use_container_width=True, hide_index=True)
+    st.caption("※ japan-reit.com の予想分配金を使用（期末日+2ヶ月を振込月と推定）。"
+               "取得できない銘柄は公式利回りベースで補完。利益超過分配金を含む場合あり。")
 
     # 用途構成（評価額加重 + 分配金加重）の2種グラフ
     st.markdown("**運用物件タイプ**")
