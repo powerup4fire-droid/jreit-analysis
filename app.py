@@ -762,7 +762,8 @@ def render_comparison(df, divs):
         ("200日乖離 %", lambda c: rows[c]["dev_200d_pct"], "low"),
         ("6年平均乖離 %", lambda c: rows[c]["dev_mean_6y_pct"], "low"),
         ("リーマン比 %", lambda c: rows[c]["lehman_ratio_pct"], "high"),
-        ("年間分配金 円/口", lambda c: annual_distribution(divs, c)[0], "high"),
+        ("年間分配金 円/口", lambda c: (rows[c]["yield_total"] / 100.0 * rows[c]["latest_price"])
+            if (pd.notna(rows[c]["yield_total"]) and pd.notna(rows[c]["latest_price"])) else None, "high"),
         ("利益超過(分配比)", excess_label, None),
         ("含み益率 %", lambda c: rows[c].get("unrealized_gain_pct"), "high"),
         ("NOI利回り %", lambda c: rows[c].get("noi_yield_pct"), "high"),
@@ -989,11 +990,13 @@ def render_portfolio(df, divs):
         units = float(r["口数"]) if pd.notna(r["口数"]) else 0.0
         price = float(rec["latest_price"]) if pd.notna(rec["latest_price"]) else None
         cost = float(r["取得単価"]) if pd.notna(r["取得単価"]) else None
-        annual_pu, excess_pu = annual_distribution(divs, code)
-        # 利益超過分配金を除く基本分配金（利回り計算はこちらベース）
-        base_pu = None
-        if annual_pu is not None:
-            base_pu = annual_pu - (excess_pu or 0.0)
+        # 年間分配金（円/口）は公式分配金利回り × 株価を正とする。
+        # （dividends テーブルは欠損・部分取得で不正確な期があるため、公式利回りを信頼ソースに）
+        ytot  = float(rec["yield_total"]) if pd.notna(rec.get("yield_total")) else None
+        ybase = float(rec["yield_base"])  if pd.notna(rec.get("yield_base"))  else None
+        annual_pu = (ytot  / 100.0 * price) if (ytot  and price) else None   # 利益超過込み 年間
+        base_pu   = (ybase / 100.0 * price) if (ybase and price) else None   # 利益超過除き 年間
+        excess_pu = (annual_pu - base_pu) if (annual_pu is not None and base_pu is not None) else None
         mval = price * units if price is not None else None
         holds.append({
             "code": code, "name": rec["name"], "units": units, "price": price,
@@ -1041,20 +1044,16 @@ def render_portfolio(df, divs):
         st.caption(f"利益超過分配（年間・推定）: {fmt(tot_excess,0)} 円"
                    f"（分配金合計 {fmt(tot_total,0)} 円 の {tot_excess / tot_total * 100:.1f}%）")
 
-    # 分配金の累計見込み（直近実績を据え置いた推定）
-    st.markdown("**分配金 累計見込み（推定）**")
+    # 分配金の単年度見込み（各年とも満額。振込月が属する年に計上・日数按分なし）
+    st.markdown("**分配金 単年度見込み（利益超過除く）**")
     today = dt.date.today()
-    eoy = dt.date(today.year, 12, 31)
-    days_left = (eoy - today).days
-    cum_eoy = tot_income * (days_left / 365.0)           # 今年の残り期間ぶん
     sched = pd.DataFrame({
-        "時点": [f"{today:%Y-%m-%d}（本日）", f"{today.year}年末",
-                f"{today.year + 1}年末", f"{today.year + 2}年末"],
-        "累計分配金(円)": [0.0, cum_eoy, cum_eoy + tot_income, cum_eoy + tot_income * 2],
+        "年":         [f"{today.year}年", f"{today.year + 1}年", f"{today.year + 2}年"],
+        "分配金(円)": [f"{tot_income:,.0f}"] * 3,
     })
-    sched["累計分配金(円)"] = sched["累計分配金(円)"].map(lambda v: f"{v:,.0f}")
     st.dataframe(sched, use_container_width=True, hide_index=True)
-    st.caption("※ 本日を基準（0円）に、直近実績の年間分配金が今後も継続すると仮定した推定値です。")
+    st.caption("※ 公式分配金利回りベースの年間分配金（利益超過分配金を除く）。"
+               "各分配金は振込月が属する年に満額計上（日数按分なし）。")
 
     # 用途構成（評価額加重 + 分配金加重）の2種グラフ
     st.markdown("**運用物件タイプ**")
@@ -1123,8 +1122,8 @@ def render_portfolio(df, divs):
         sorted(str(c) for c in df["code"] if str(c) not in holds_map)
     )
 
-    # 全銘柄数が変わったらエディタをリセット
-    _sim_db_key = ",".join(_all_codes)
+    # 列構成 or 銘柄リストが変わったらエディタをリセット（v4: = 増減口数テキスト列）
+    _sim_db_key = "v4:" + ",".join(_all_codes)
     if st.session_state.get("_sim_db_key") != _sim_db_key:
         st.session_state["_sim_db_key"] = _sim_db_key
         st.session_state.pop("sim_editor", None)
@@ -1138,9 +1137,9 @@ def render_portfolio(df, divs):
         _sim_rows.append({
             "コード":         _code,
             "銘柄名":         _rec["name"][:14],
-            "現口数":         int(_h["units"]) if _h else 0,
-            "増減口数":       0,
-            "単価(円)":       int(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0,
+            "現口数":         float(_h["units"]) if _h else 0.0,
+            "増減口数":       "0",
+            "単価(円)":       float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0.0,
         })
     _sim_base = pd.DataFrame(_sim_rows)
 
@@ -1149,13 +1148,24 @@ def render_portfolio(df, divs):
         key="sim_editor",
         disabled=["コード", "銘柄名", "現口数"],
         column_config={
-            "増減口数": st.column_config.NumberColumn(
-                "増減口数", step=1, default=0,
-                help="正=買増 / 負=売却（現口数を超えた売却は自動でゼロ調整）"),
+            "増減口数": st.column_config.TextColumn(
+                "増減口数", default="0",
+                help="買増は正の数、売却は負の数（例: -10）。現口数を超えた売却は自動でゼロ調整"),
+            "現口数": st.column_config.NumberColumn("現口数", format="%d"),
             "単価(円)": st.column_config.NumberColumn(
-                "単価(円)", min_value=0, step=1000,
+                "単価(円)", min_value=0.0, step=1000.0, format="%d",
                 help="購入・売却単価（投下資金の計算に使用）"),
         })
+
+    def _parse_delta(v):
+        """増減口数テキストを数値へ。空欄・不正値は0。全角記号も許容。"""
+        if v is None: return 0.0
+        s = str(v).strip().translate(str.maketrans("－＋０１２３４５６７８９", "-+0123456789"))
+        if not s: return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
 
     # シミュレーション集計
     def _make_amap(entries):
@@ -1177,10 +1187,10 @@ def render_portfolio(df, divs):
     for _i in range(len(sim_edited)):
         _row  = sim_edited.iloc[_i]
         _code = str(_row["コード"])
-        _curr = float(_row["現口数"] or 0)
-        _dlta = float(_row["増減口数"] or 0)
+        _curr = float(_row["現口数"])  if pd.notna(_row["現口数"])  else 0.0
+        _dlta = _parse_delta(_row["増減口数"])
         _dlta = max(_dlta, -_curr)          # 売却は現口数まで
-        _sprc = float(_row["単価(円)"] or 0)
+        _sprc = float(_row["単価(円)"])  if pd.notna(_row["単価(円)"])  else 0.0
         _new  = _curr + _dlta
         _px   = float(df[df["code"]==_code]["latest_price"].iloc[0]) \
                 if not df[df["code"]==_code].empty and \
@@ -1316,7 +1326,7 @@ def render_portfolio(df, divs):
             '<table style="border-collapse:collapse;font-size:13px;width:100%">'
             f'<thead><tr>{det_head}</tr></thead><tbody>{"".join(det_html_rows)}</tbody></table></div>')
         st.markdown(det_table_html, unsafe_allow_html=True)
-    st.caption("※ 年間分配金は直近12ヶ月の実績（利益超過分配金を除く）。投資口分割を自動検出してスプリット後の期を年換算。取得/評価利回りも同ベース。")
+    st.caption("※ 年間分配金は公式分配金利回り（利益超過分配金を除く）× 株価で算出。取得/評価利回りも同ベース。")
 
 
 # ===========================================================================
