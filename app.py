@@ -1191,8 +1191,8 @@ def render_portfolio(df, divs):
         if st.button("リセット", key="_sim_reset", use_container_width=True):
             st.session_state.pop("_sim_prev_edits", None)
             st.session_state.pop("_sim_needs_restore", None)
-            # key を変えて data_editor を強制再マウント（popだけでは不十分）
             st.session_state["_sim_ver"] = st.session_state.get("_sim_ver", 0) + 1
+            st.rerun()
     st.caption("全銘柄を対象に口数増減を仮入力。変更前後の円グラフで構成比への感度を確認。実際の保有には影響しません。")
 
     # 全銘柄の base_pu / asset_pct を準備（保有中は実値、非保有は yield_base 推計）
