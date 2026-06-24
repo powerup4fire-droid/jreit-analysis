@@ -1184,7 +1184,13 @@ def render_portfolio(df, divs):
 
     # ── リバランス シミュレーション ──────────────────────────────────────────
     st.markdown("---")
-    st.markdown("**リバランス シミュレーション**")
+    _sh1, _sh2 = st.columns([6, 1])
+    with _sh1:
+        st.markdown("**リバランス シミュレーション**")
+    with _sh2:
+        if st.button("リセット", key="_sim_reset", use_container_width=True):
+            st.session_state.pop("_sim_prev_edits", None)
+            st.session_state.pop("sim_editor", None)
     st.caption("全銘柄を対象に口数増減を仮入力。変更前後の円グラフで構成比への感度を確認。実際の保有には影響しません。")
 
     # 全銘柄の base_pu / asset_pct を準備（保有中は実値、非保有は yield_base 推計）
@@ -1213,6 +1219,10 @@ def render_portfolio(df, divs):
     if st.session_state.get("_sim_db_key") != _sim_db_key:
         st.session_state["_sim_db_key"] = _sim_db_key
         st.session_state.pop("sim_editor", None)
+        st.session_state.pop("_sim_prev_edits", None)
+
+    # リセットボタン押下後 or ページ遷移後の復元: リセット後は空dict、遷移後は保存値
+    _sim_prev_edits = st.session_state.get("_sim_prev_edits", {})
 
     _sim_rows = []
     for _code in _all_codes:
@@ -1220,12 +1230,14 @@ def render_portfolio(df, divs):
         if _r.empty: continue
         _rec = _r.iloc[0]
         _h   = holds_map.get(_code)
+        _prev = _sim_prev_edits.get(_code, {})
+        _default_px = float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0.0
         _sim_rows.append({
-            "コード":         _code,
-            "銘柄名":         _rec["name"][:14],
-            "現口数":         float(_h["units"]) if _h else 0.0,
-            "増減口数":       "0",
-            "単価(円)":       float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0.0,
+            "コード":   _code,
+            "銘柄名":   _rec["name"][:14],
+            "現口数":   float(_h["units"]) if _h else 0.0,
+            "増減口数": _prev.get("増減口数", "0"),
+            "単価(円)": _prev.get("単価(円)", _default_px),
         })
     _sim_base = pd.DataFrame(_sim_rows)
 
@@ -1242,6 +1254,20 @@ def render_portfolio(df, divs):
                 "単価(円)", min_value=0.0, step=1000.0, format="%d",
                 help="購入・売却単価（投下資金の計算に使用）"),
         })
+
+    # 編集値をセッションに保存（ページ遷移後も復元できるよう）
+    _save_prev: dict = {}
+    for _si in range(len(sim_edited)):
+        _sr = sim_edited.iloc[_si]
+        _sc = str(_sr["コード"])
+        _sd = str(_sr["増減口数"])
+        _r2 = df[df["code"] == _sc]
+        _dpx = float(_r2.iloc[0]["latest_price"]) \
+               if not _r2.empty and pd.notna(_r2.iloc[0]["latest_price"]) else 0.0
+        _sp = float(_sr["単価(円)"]) if pd.notna(_sr["単価(円)"]) else _dpx
+        if _sd not in ("0", "0.0", "") or abs(_sp - _dpx) > 0.01:
+            _save_prev[_sc] = {"増減口数": _sd, "単価(円)": _sp}
+    st.session_state["_sim_prev_edits"] = _save_prev
 
     def _parse_delta(v):
         """増減口数テキストを数値へ。空欄・不正値は0。全角記号も許容。"""
@@ -1459,6 +1485,12 @@ def main():
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
     page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
     page = page or pages[0]
+    # ポートフォリオページへ遷移したとき sim_editor のデルタをクリア
+    # （_sim_prev_edits から base に値を戻すため widget 内部状態と二重適用させない）
+    _prev_page = st.session_state.get("_nav_page", "")
+    st.session_state["_nav_page"] = page
+    if page == "💼 マイポートフォリオ" and _prev_page != "💼 マイポートフォリオ":
+        st.session_state.pop("sim_editor", None)
     st.divider()
     if page == "📋 ダッシュボード":
         render_dashboard(df, divs)
