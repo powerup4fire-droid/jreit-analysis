@@ -1438,30 +1438,171 @@ def main():
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
 
+    # Smart Header: JS がネイティブの segmented_control ボタンを代理クリックすることで
+    # Streamlit のセッション状態を壊さずに fixed ナビを実現する。
     st.markdown("""
 <style>
-/* === 右固定ナビゲーション === */
-div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
-    position: fixed !important;
-    right: 12px !important;
-    top: 50% !important;
-    transform: translateY(-50%) !important;
-    z-index: 9000 !important;
-    background: rgba(255,255,255,0.97) !important;
-    border-radius: 12px !important;
-    box-shadow: 0 2px 20px rgba(0,0,0,0.14) !important;
-    border: 1px solid rgba(220,220,220,0.6) !important;
-    padding: 8px !important;
-    width: auto !important;
+/* ── Smart Header ───────────────────────────────── */
+#sn-desktop {
+    position: fixed;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: rgba(255,255,255,0.97);
+    border-radius: 12px;
+    box-shadow: 0 2px 20px rgba(0,0,0,.15);
+    border: 1px solid rgba(200,200,200,.5);
+    padding: 8px;
 }
-[data-testid="stSegmentedControl"],
-[data-testid="stSegmentedControl"] > div {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 4px !important;
-    width: auto !important;
+#sn-mobile {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 9999;
+    background: rgba(255,255,255,0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 2px 12px rgba(0,0,0,.12);
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+}
+#sn-mobile.sn-hide { transform: translateY(-110%); }
+.sn-btn {
+    display: block;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    background: #f3f4f6;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s, color .15s;
+    font-family: inherit;
+}
+.sn-btn.sn-active { background: #ff4b4b; color: #fff; }
+.sn-btn:hover:not(.sn-active) { background: #e5e7eb; }
+
+/* 元の segmented_control を画面外に退避（DOM は残しておき JS でクリック可能に） */
+div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
+    position: absolute !important;
+    left: -9999px !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+@media (max-width: 767px) {
+    #sn-desktop { display: none !important; }
+    [data-testid="stMainBlockContainer"] { padding-top: 58px !important; }
+}
+@media (min-width: 768px) {
+    #sn-mobile { display: none !important; }
 }
 </style>
+<script>
+(function(){
+    if (window._snInit) return;
+    window._snInit = true;
+
+    var PAGES = ['📋 ダッシュボード', '⚖️ 銘柄比較', '💼 マイポートフォリオ'];
+
+    function getStBtns() {
+        return document.querySelectorAll('[data-testid="stSegmentedControl"] button');
+    }
+
+    function getActiveIdx() {
+        var btns = getStBtns();
+        for (var i = 0; i < btns.length; i++) {
+            var b = btns[i];
+            if (b.getAttribute('aria-pressed') === 'true' ||
+                b.getAttribute('aria-checked') === 'true' ||
+                b.getAttribute('aria-selected') === 'true') { return i; }
+        }
+        return window._snPage || 0;
+    }
+
+    function syncActive(idx) {
+        document.querySelectorAll('.sn-btn').forEach(function(b, i) {
+            b.classList.toggle('sn-active', i === idx);
+        });
+    }
+
+    function clickPage(idx) {
+        var btns = getStBtns();
+        if (btns[idx]) btns[idx].click();
+        window._snPage = idx;
+        syncActive(idx);
+    }
+
+    function buildNav(id) {
+        if (document.getElementById(id)) return;
+        var nav = document.createElement('div');
+        nav.id = id;
+        var labels = PAGES;
+        labels.forEach(function(name, i) {
+            var btn = document.createElement('button');
+            btn.className = 'sn-btn';
+            btn.textContent = name;
+            (function(idx){ btn.addEventListener('click', function(){ clickPage(idx); }); })(i);
+            nav.appendChild(btn);
+        });
+        document.body.appendChild(nav);
+    }
+
+    var lastY = 0, ticking = false;
+    function onScroll() {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(function() {
+            var nav = document.getElementById('sn-mobile');
+            if (!nav) { ticking = false; return; }
+            var el = document.querySelector('[data-testid="stMain"]');
+            var y = el ? el.scrollTop : (window.pageYOffset || document.documentElement.scrollTop);
+            if (y <= 30) {
+                nav.classList.remove('sn-hide');
+            } else if (y - lastY > 8) {
+                nav.classList.add('sn-hide');
+            } else if (lastY - y > 8) {
+                nav.classList.remove('sn-hide');
+            }
+            lastY = y;
+            ticking = false;
+        });
+    }
+
+    function init() {
+        buildNav('sn-desktop');
+        buildNav('sn-mobile');
+        syncActive(getActiveIdx());
+
+        var mainEl = document.querySelector('[data-testid="stMain"]');
+        if (mainEl) mainEl.addEventListener('scroll', onScroll, {passive: true});
+        window.addEventListener('scroll', onScroll, {passive: true});
+
+        var obs = new MutationObserver(function() { syncActive(getActiveIdx()); });
+        obs.observe(document.body, {
+            subtree: true, attributes: true,
+            attributeFilter: ['aria-pressed', 'aria-checked', 'aria-selected']
+        });
+    }
+
+    var tries = 0;
+    function tryInit() {
+        if (document.querySelector('[data-testid="stSegmentedControl"]')) { init(); }
+        else if (tries++ < 40) { setTimeout(tryInit, 150); }
+    }
+    tryInit();
+})();
+</script>
 """, unsafe_allow_html=True)
 
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
