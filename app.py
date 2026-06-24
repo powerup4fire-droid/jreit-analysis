@@ -283,6 +283,13 @@ def build_frame():
 
     df["exc6"] = df["code"].map(lambda c: excess_ratio_window(c, 6))
     df["exc10"] = df["code"].map(lambda c: excess_ratio_window(c, 10))
+    # 実質利回り = 利回り × (1 - 直近6期の利益超過割合)
+    exc6_ratio = df["exc6"].fillna(0.0) / 100.0
+    df["yield_base"] = np.where(
+        df["yield_total"].notna(),
+        (df["yield_total"] * (1.0 - exc6_ratio)).round(2),
+        np.nan,
+    )
     return df, divs, runs, reits
 
 
@@ -351,11 +358,11 @@ def render_dashboard(df, divs):
     uses = sorted(df["use_primary"].dropna().unique().tolist())
     c_sort, c_pick, c_avg = st.columns([1.1, 2.2, 1.5])
     with c_sort:
-        sort_key = st.selectbox("並び替え", ["利回り%", "乖離%", "リーマン比%",
+        sort_key = st.selectbox("並び替え", ["利回り%", "実質利回り%", "乖離%", "リーマン比%",
                                           "時価総額", "出来高", "コードNo"])
     with c_pick:
         pick = st.pills("主用途で絞り込み（クリックでON/OFF）", uses, selection_mode="multi",
-                        default=uses)
+                        default=uses, key="use_pick")
         only_no_excess = st.checkbox("利益超過分配金なしのみ", value=False,
                                      help="直近10期で利益超過分配金が一度も無い銘柄だけ表示")
     with c_avg:
@@ -417,6 +424,7 @@ def render_dashboard(df, divs):
         "コード": view["code"], "名称": view["name"], "主用途": view["use_label"],
         "タイプ": view["type_jp"], "上場期": g("period_no").map(period_disp),
         "利回り%": view["yield_total"].round(2),
+        "実質利回り%": view["yield_base"].round(2),
         "価格": view["latest_price"], "出来高": view["volume"],
         "時価総額(億円)": view["mktcap_oku"].round(0),
         "スポンサー": view.apply(sponsor_disp, axis=1),
@@ -428,9 +436,10 @@ def render_dashboard(df, divs):
         "_primary": view["use_primary"], "_types": view["use_types"],
         "_assets": view.apply(asset_map, axis=1),
     })
-    sort_map = {"利回り%": ("利回り%", False), "乖離%": ("乖離%", True),
-                "リーマン比%": ("リーマン比%", True), "時価総額": ("時価総額(億円)", False),
-                "出来高": ("出来高", False), "コードNo": ("コード", True)}
+    sort_map = {"利回り%": ("利回り%", False), "実質利回り%": ("実質利回り%", False),
+                "乖離%": ("乖離%", True), "リーマン比%": ("リーマン比%", True),
+                "時価総額": ("時価総額(億円)", False), "出来高": ("出来高", False),
+                "コードNo": ("コード", True)}
     col, asc = sort_map[sort_key]
     summary = summary.sort_values(col, ascending=asc, na_position="last").reset_index(drop=True)
     primaries = summary.pop("_primary")
@@ -468,7 +477,7 @@ def render_dashboard(df, divs):
 
     # 数値列を文字列へ整形（NA は「—」）
     num_fmt = {
-        "利回り%": "{:.2f}", "価格": "{:,.0f}", "出来高": "{:,.0f}",
+        "利回り%": "{:.2f}", "実質利回り%": "{:.2f}", "価格": "{:,.0f}", "出来高": "{:,.0f}",
         "時価総額(億円)": "{:,.0f}", "NAV倍率": "{:.2f}",
         "乖離%": "{:+.1f}", "リーマン比%": "{:.1f}",
     }
@@ -477,7 +486,7 @@ def render_dashboard(df, divs):
 
     # st.dataframe(canvas) は CSS グラデーション背景を描画できないため、HTMLテーブルで描画する。
     cols = list(summary.columns)
-    right_cols = {"利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
+    right_cols = {"利回り%", "実質利回り%", "価格", "出来高", "時価総額(億円)", "NAV倍率",
                   "乖離%", "リーマン比%"}
     center_cols = {"タイプ", "上場期", "利益超過(6期)", "利益超過(10期)", "Jリート"}
     head = "".join(
