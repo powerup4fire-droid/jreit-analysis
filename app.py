@@ -1403,10 +1403,10 @@ def render_portfolio(df, divs):
                         f'<td style="background:{tbg};color:{FONT};font-weight:700;'
                         f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
                 elif c == "利益超過分配金":
-                    color = "#16a34a" if v == "✓" else FONT
+                    fc = "#16a34a" if v == "✓" else FONT
                     tds.append(
-                        f'<td style="background:{row_bg};color:{color};font-weight:bold;'
-                        f'text-align:center;white-space:nowrap;font-size:15px;'
+                        f'<td style="background:{row_bg};color:{fc};font-weight:bold;font-size:15px;'
+                        f'text-align:center;white-space:nowrap;'
                         f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
                 else:
                     align = "right" if c in det_right else ("center" if c in det_center else "left")
@@ -1445,116 +1445,27 @@ def main():
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
 
-    # ─── グローバル CSS ──────────────────────────────────────────────────────
     st.markdown("""
 <style>
-/* ── Manage app / デプロイボタン 完全非表示 ── */
 [data-testid="stBottom"],
 [data-testid="manage-app-button"],
 [data-testid="stDeployButton"],
 [data-testid="stStatusWidget"],
 .stDeployButton,
 #MainMenu, footer { display: none !important; }
-
-/* ── デスクトップ (≥768px): ナビを右側に固定表示 ── */
-@media (min-width: 768px) {
-    /* ① ナビ列と本文列を含む flex 行をベースライン揃えに */
-    [data-testid="stHorizontalBlock"]:has(#_nav_anchor) {
-        align-items: flex-start !important;
-    }
-    /* ② ナビ列 (#_nav_anchor を含む方) を右端に移動 + 上端固定 */
-    [data-testid="column"]:has(#_nav_anchor) {
-        order: 2 !important;
-        position: sticky !important;
-        top: 12px !important;
-        align-self: flex-start !important;
-    }
-    /* ③ 本文列は左側 */
-    [data-testid="column"]:has(#_nav_anchor) ~ [data-testid="column"] {
-        order: 1 !important;
-    }
-}
-
-/* ── モバイル (<768px): ナビを上部に横並び ── */
-@media (max-width: 767px) {
-    [data-testid="stHorizontalBlock"]:has(#_nav_anchor) {
-        flex-direction: column !important;
-    }
-    [data-testid="column"]:has(#_nav_anchor),
-    [data-testid="column"]:has(#_nav_anchor) ~ [data-testid="column"] {
-        width: 100% !important;
-        max-width: 100% !important;
-        flex: unset !important;
-    }
-    [data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > div {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: wrap !important;
-        gap: 6px !important;
-    }
-    [data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label {
-        flex: 1 1 auto !important;
-    }
-}
-
-/* ── ナビ ラジオボタン → ボタン風スタイル ── */
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > div {
-    gap: 4px;
-}
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label {
-    display: flex !important;
-    align-items: center !important;
-    background: #f3f4f6 !important;
-    border-radius: 8px !important;
-    padding: 9px 14px !important;
-    font-weight: 600 !important;
-    font-size: 13px !important;
-    cursor: pointer !important;
-    transition: background .15s !important;
-    margin-bottom: 2px !important;
-    gap: 6px !important;
-    white-space: nowrap !important;
-}
-/* ラジオ丸アイコンを非表示 */
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] input[type="radio"] {
-    display: none !important;
-}
-/* 選択中のラベルを赤く */
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label:has(input:checked) {
-    background: #ff4b4b !important;
-    color: #fff !important;
-}
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label:hover:not(:has(input:checked)) {
-    background: #e5e7eb !important;
-}
-/* ラジオ上のラベルテキスト ("ページ") を非表示 */
-[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > label {
-    display: none !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
-    # ─── レイアウト: ナビ列(左DOM・右表示) | 本文列 ─────────────────────────
-    _NAV_OPTS = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
-    col_nav, col_content = st.columns([2, 10])
-
-    with col_nav:
-        # CSS の :has(#_nav_anchor) でこの列だけをターゲットにする
-        st.markdown('<div id="_nav_anchor"></div>', unsafe_allow_html=True)
-        page = st.radio("ページ", _NAV_OPTS,
-                        index=st.session_state.get("_nav_idx", 0),
-                        label_visibility="visible")
-        st.session_state["_nav_idx"] = _NAV_OPTS.index(page)
-
-    with col_content:
-        st.divider()
-        page_idx = _NAV_OPTS.index(page)
-        if page_idx == 0:
-            render_dashboard(df, divs)
-        elif page_idx == 1:
-            render_comparison(df, divs)
-        else:
-            render_portfolio(df, divs)
+    pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
+    page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
+    page = page or pages[0]
+    st.divider()
+    if page == "📋 ダッシュボード":
+        render_dashboard(df, divs)
+    elif page == "⚖️ 銘柄比較":
+        render_comparison(df, divs)
+    else:
+        render_portfolio(df, divs)
 
 
 if __name__ == "__main__":
