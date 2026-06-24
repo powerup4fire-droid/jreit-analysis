@@ -1014,6 +1014,7 @@ def render_portfolio(df, divs):
         if amap_val:
             donut_chart(amap_val, height=220, inside_labels=True)
             st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap_val.items(), key=lambda x: -x[1])))
+            st.caption(f"📌 1% ≈ {wsum_val/100:,.0f} 円（評価額）　リバランス目安: 買増評価額 ÷ 利回り で分配金%が変動")
         else:
             st.caption("構成データなし")
     with gc2:
@@ -1021,6 +1022,7 @@ def render_portfolio(df, divs):
         if amap_dist:
             donut_chart(amap_dist, height=220, inside_labels=True)
             st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap_dist.items(), key=lambda x: -x[1])))
+            st.caption(f"📌 1% ≈ {wsum_dist/100:,.0f} 円/年（分配金）　例: 利回り5%なら {wsum_dist/100/0.05:,.0f} 円買増 → +1%")
         else:
             st.caption("構成データなし")
 
