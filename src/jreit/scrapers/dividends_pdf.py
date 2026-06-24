@@ -59,7 +59,8 @@ def discover_japanreit(client: HttpClient, meigara_base: str, code: str, max_n: 
 
 def parse_pdf(path: Path) -> tuple[int | None, int | None, str]:
     """returns (total_distribution, excess_distribution, status)。
-    基準分配金(利益超過含まない) と 1口当たり利益超過分配金 を表から取り total=base+excess。"""
+    基準分配金(利益超過含まない) と 1口当たり利益超過分配金 を表から取り total=base+excess。
+    ヘッダが複数行に分割されているPDF（積水ハウスリート等）にも対応。"""
     try:
         import pdfplumber
         with pdfplumber.open(path) as pdf:
@@ -67,27 +68,36 @@ def parse_pdf(path: Path) -> tuple[int | None, int | None, str]:
                 for tb in pg.extract_tables() or []:
                     if not tb or not tb[0]:
                         continue
-                    # 全角/半角の「1」差異を吸収（"口当たり…"で判定）
-                    header = [(c or "").replace("\n", "") for c in tb[0]]
-                    hjoin = " ".join(header)
-                    if "口当たり分配金" not in hjoin or "利益超過分配金" not in hjoin:
-                        continue
-                    bcol = ecol = None
-                    for i, h in enumerate(header):
-                        if "口当たり分配金" in h and "含まない" in h:
-                            bcol = i
-                        if "口当たり利益超過分配金" in h and "含まない" not in h:
-                            ecol = i
-                    if bcol is None or ecol is None:
-                        continue
-                    for row in tb[1:]:
-                        bcell = row[bcol] if bcol < len(row) else None
-                        base = _first_num(bcell)
-                        if base is None:
+                    # ヘッダ行数を1〜3で試し、列ごとにテキストを縦結合して列の意味を判定
+                    max_hdr = min(3, len(tb) - 1)
+                    for n_hdr in range(1, max_hdr + 1):
+                        ncols = max(len(r) for r in tb[:n_hdr])
+                        col_hdrs = []
+                        for ci in range(ncols):
+                            txt = "".join(
+                                (tb[ri][ci] or "").replace("\n", "")
+                                for ri in range(n_hdr) if ci < len(tb[ri])
+                            )
+                            col_hdrs.append(txt)
+                        hjoin = " ".join(col_hdrs)
+                        if "口当たり分配金" not in hjoin or "利益超過分配金" not in hjoin:
                             continue
-                        ecell = row[ecol] if ecol < len(row) else None
-                        excess = _first_num(ecell) or 0   # － は0扱い
-                        return base + excess, excess, "ok"
+                        bcol = ecol = None
+                        for i, h in enumerate(col_hdrs):
+                            if "口当たり分配金" in h and "含まない" in h:
+                                bcol = i
+                            if "口当たり利益超過分配金" in h and "含まない" not in h:
+                                ecol = i
+                        if bcol is None or ecol is None:
+                            continue
+                        for row in tb[n_hdr:]:
+                            bcell = row[bcol] if bcol < len(row) else None
+                            base = _first_num(bcell)
+                            if base is None:
+                                continue
+                            ecell = row[ecol] if ecol < len(row) else None
+                            excess = _first_num(ecell) or 0   # － は0扱い
+                            return base + excess, excess, "ok"
     except Exception as e:  # noqa
         logger.warning(f"pdf parse failed {path.name}: {e}")
         return None, None, "unreadable"

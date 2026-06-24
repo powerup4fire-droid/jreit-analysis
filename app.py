@@ -122,6 +122,16 @@ def fmt(v, dec=0, suf=""):
     return f"{v:,.{dec}f}{suf}"
 
 
+def fmt_goshya(v, suf=""):
+    """小数点1桁・五捨六入（5以下切り捨て、6以上切り上げ）。"""
+    import math
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "—"
+    sign = -1 if v < 0 else 1
+    r = sign * math.floor(abs(v) * 10 + 0.4) / 10
+    return f"{r:.1f}{suf}"
+
+
 def jp_type(t) -> str:
     s = str(t or "")
     for en, ja in TYPE_JP.items():
@@ -959,7 +969,7 @@ def render_portfolio(df, divs):
     det = pd.DataFrame([{
         "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
         "評価額(円)": fmt(h["value"], 0),
-        "評価損益率": fmt(h["gain_pct"], 2, "%") if h["gain_pct"] is not None else "—",
+        "評価損益率": fmt_goshya(h["gain_pct"], "%") if h["gain_pct"] is not None else "—",
         "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
         "年間分配金(円/口)": fmt(h["annual_pu"], 0) if h["annual_pu"] is not None else "—",
         "年間分配金合計(円)": fmt(h["annual_income"], 0),
