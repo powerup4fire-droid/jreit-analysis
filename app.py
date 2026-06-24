@@ -482,10 +482,10 @@ def render_dashboard(df, divs):
         st.session_state["_sv_no_excess"] = only_no_excess
     with c_avg:
         ex = df[~is_infra(df)]
-        avg = ex["yield_total"].mean()
+        avg = ex["yield_total"].median()
         st.markdown(
             f'<div style="background:#eef3fb;border-radius:10px;padding:12px 16px;text-align:center;margin-top:26px">'
-            f'<div style="font-size:13px;color:#111">📊 J-REIT全体 平均利回り<br>'
+            f'<div style="font-size:13px;color:#111">📊 J-REIT全体 利回り中央値<br>'
             f'<span style="font-size:11px;color:#555">（インフラファンド除く・{len(ex)}銘柄）</span></div>'
             f'<div style="font-size:1.7em;font-weight:700;color:#111;margin-top:2px">{avg:.2f}%</div></div>',
             unsafe_allow_html=True)
