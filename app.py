@@ -1445,50 +1445,116 @@ def main():
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
 
-    # ─── グローバル CSS（Manage app 非表示 + サイドバー右固定） ─────────────
+    # ─── グローバル CSS ──────────────────────────────────────────────────────
     st.markdown("""
 <style>
-/* Streamlit UI 余計なボタン非表示 */
+/* ── Manage app / デプロイボタン 完全非表示 ── */
+[data-testid="stBottom"],
 [data-testid="manage-app-button"],
 [data-testid="stDeployButton"],
-[data-testid="stBottom"],
+[data-testid="stStatusWidget"],
 .stDeployButton,
 #MainMenu, footer { display: none !important; }
 
-/* ── デスクトップ: サイドバーを右固定に移動 ── */
+/* ── デスクトップ (≥768px): ナビを右側に固定表示 ── */
 @media (min-width: 768px) {
-    section[data-testid="stSidebar"] {
-        left: auto !important;
-        right: 0 !important;
+    /* ① ナビ列と本文列を含む flex 行をベースライン揃えに */
+    [data-testid="stHorizontalBlock"]:has(#_nav_anchor) {
+        align-items: flex-start !important;
     }
-    /* 折りたたみ時は右にスライドアウト */
-    section[data-testid="stSidebar"][aria-expanded="false"] {
-        transform: translateX(100%) !important;
+    /* ② ナビ列 (#_nav_anchor を含む方) を右端に移動 + 上端固定 */
+    [data-testid="column"]:has(#_nav_anchor) {
+        order: 2 !important;
+        position: sticky !important;
+        top: 12px !important;
+        align-self: flex-start !important;
     }
-    /* メインコンテンツの左マージン除去（サイドバーが右移動したため不要） */
-    [data-testid="stMain"] { margin-left: 0 !important; }
+    /* ③ 本文列は左側 */
+    [data-testid="column"]:has(#_nav_anchor) ~ [data-testid="column"] {
+        order: 1 !important;
+    }
 }
-/* 折りたたみボタン非表示（ナビを常時表示） */
-[data-testid="stSidebarCollapseButton"],
-[data-testid="collapsedControl"] { display: none !important; }
+
+/* ── モバイル (<768px): ナビを上部に横並び ── */
+@media (max-width: 767px) {
+    [data-testid="stHorizontalBlock"]:has(#_nav_anchor) {
+        flex-direction: column !important;
+    }
+    [data-testid="column"]:has(#_nav_anchor),
+    [data-testid="column"]:has(#_nav_anchor) ~ [data-testid="column"] {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: unset !important;
+    }
+    [data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > div {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+    }
+    [data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label {
+        flex: 1 1 auto !important;
+    }
+}
+
+/* ── ナビ ラジオボタン → ボタン風スタイル ── */
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > div {
+    gap: 4px;
+}
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label {
+    display: flex !important;
+    align-items: center !important;
+    background: #f3f4f6 !important;
+    border-radius: 8px !important;
+    padding: 9px 14px !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    cursor: pointer !important;
+    transition: background .15s !important;
+    margin-bottom: 2px !important;
+    gap: 6px !important;
+    white-space: nowrap !important;
+}
+/* ラジオ丸アイコンを非表示 */
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] input[type="radio"] {
+    display: none !important;
+}
+/* 選択中のラベルを赤く */
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label:has(input:checked) {
+    background: #ff4b4b !important;
+    color: #fff !important;
+}
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] label:hover:not(:has(input:checked)) {
+    background: #e5e7eb !important;
+}
+/* ラジオ上のラベルテキスト ("ページ") を非表示 */
+[data-testid="column"]:has(#_nav_anchor) [data-testid="stRadio"] > label {
+    display: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-    # ─── 右サイドナビゲーション（sidebar を CSS で右側に配置） ─────────────
-    with st.sidebar:
-        page = st.radio(
-            "ページ",
-            ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"],
-            label_visibility="collapsed",
-        )
+    # ─── レイアウト: ナビ列(左DOM・右表示) | 本文列 ─────────────────────────
+    _NAV_OPTS = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
+    col_nav, col_content = st.columns([2, 10])
 
-    st.divider()
-    if page == "📋 ダッシュボード":
-        render_dashboard(df, divs)
-    elif page == "⚖️ 銘柄比較":
-        render_comparison(df, divs)
-    else:
-        render_portfolio(df, divs)
+    with col_nav:
+        # CSS の :has(#_nav_anchor) でこの列だけをターゲットにする
+        st.markdown('<div id="_nav_anchor"></div>', unsafe_allow_html=True)
+        page = st.radio("ページ", _NAV_OPTS,
+                        index=st.session_state.get("_nav_idx", 0),
+                        label_visibility="visible")
+        st.session_state["_nav_idx"] = _NAV_OPTS.index(page)
+
+    with col_content:
+        st.divider()
+        page_idx = _NAV_OPTS.index(page)
+        if page_idx == 0:
+            render_dashboard(df, divs)
+        elif page_idx == 1:
+            render_comparison(df, divs)
+        else:
+            render_portfolio(df, divs)
 
 
 if __name__ == "__main__":
