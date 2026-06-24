@@ -1100,106 +1100,138 @@ def render_portfolio(df, divs):
     # ── リバランス シミュレーション ──────────────────────────────────────────
     st.markdown("---")
     st.markdown("**リバランス シミュレーション**")
-    st.caption("口数・単価を仮入力 → 変更前後の円グラフで感度を確認。実際の保有には影響しません。")
+    st.caption("全銘柄を対象に口数増減を仮入力。変更前後の円グラフで構成比への感度を確認。実際の保有には影響しません。")
 
-    # シミュレーション入力テーブル（保有銘柄のみ）
-    sim_base = pd.DataFrame([{
-        "コード": h["code"],
-        "銘柄名": h["name"][:12],
-        "追加口数": 0,
-        "購入単価(円/口)": int(h["price"]) if h["price"] else 0,
-    } for h in holds])
+    # 全銘柄の base_pu / asset_pct を準備（保有中は実値、非保有は yield_base 推計）
+    holds_map = {h["code"]: h for h in holds}
+    _base_pu_all, _amap_all = {}, {}
+    for _, _rec in df.iterrows():
+        _c = str(_rec["code"])
+        _h = holds_map.get(_c)
+        if _h:
+            _base_pu_all[_c] = _h["base_pu"]
+            _amap_all[_c]    = _h["asset_pct"]
+        else:
+            _px = float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else None
+            _yb = float(_rec["yield_base"])    if pd.notna(_rec.get("yield_base"))    else None
+            _base_pu_all[_c] = _yb / 100.0 * _px if (_yb and _px) else None
+            _amap_all[_c]    = asset_map(_rec)
 
-    # 保有銘柄セットが変わったらsim editorをリセット
-    _holds_key = ",".join(h["code"] for h in holds)
-    if st.session_state.get("_sim_holds_key") != _holds_key:
-        st.session_state["_sim_holds_key"] = _holds_key
+    # 並び順: 保有中コード → 非保有コード（両方コード昇順）
+    _all_codes = (
+        sorted(holds_map.keys()) +
+        sorted(str(c) for c in df["code"] if str(c) not in holds_map)
+    )
+
+    # 全銘柄数が変わったらエディタをリセット
+    _sim_db_key = ",".join(_all_codes)
+    if st.session_state.get("_sim_db_key") != _sim_db_key:
+        st.session_state["_sim_db_key"] = _sim_db_key
         st.session_state.pop("sim_editor", None)
 
+    _sim_rows = []
+    for _code in _all_codes:
+        _r = df[df["code"] == _code]
+        if _r.empty: continue
+        _rec = _r.iloc[0]
+        _h   = holds_map.get(_code)
+        _sim_rows.append({
+            "コード":         _code,
+            "銘柄名":         _rec["name"][:14],
+            "現口数":         int(_h["units"]) if _h else 0,
+            "増減口数":       0,
+            "単価(円)":       int(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0,
+        })
+    _sim_base = pd.DataFrame(_sim_rows)
+
     sim_edited = st.data_editor(
-        sim_base, use_container_width=True, hide_index=True,
+        _sim_base, use_container_width=True, hide_index=True,
         key="sim_editor",
-        disabled=["コード", "銘柄名"],
+        disabled=["コード", "銘柄名", "現口数"],
         column_config={
-            "追加口数": st.column_config.NumberColumn("追加口数", step=1, default=0,
-                help="正=買増、負=売却。0なら現状維持"),
-            "購入単価(円/口)": st.column_config.NumberColumn("購入単価(円/口)", min_value=0, step=1000,
-                help="追加購入/売却の単価（評価額計算には使わず分配金比率のみ影響）"),
+            "増減口数": st.column_config.NumberColumn(
+                "増減口数", step=1, default=0,
+                help="正=買増 / 負=売却（現口数を超えた売却は自動でゼロ調整）"),
+            "単価(円)": st.column_config.NumberColumn(
+                "単価(円)", min_value=0, step=1000,
+                help="購入・売却単価（投下資金の計算に使用）"),
         })
 
-    # シミュレーション後の保有を計算
-    def _compute_amap(holds_list):
-        """holds リストから 評価額・分配金ベースのアセット構成比を返す"""
-        agg_v, agg_d = {}, {}
-        ws_v = ws_d = 0.0
-        for h in holds_list:
-            if h["value"]:
-                for ja, pct in h["asset_pct"].items():
-                    agg_v[ja] = agg_v.get(ja, 0.0) + float(pct) / 100.0 * h["value"]
-                ws_v += h["value"]
-            if h["base_income"]:
-                for ja, pct in h["asset_pct"].items():
-                    agg_d[ja] = agg_d.get(ja, 0.0) + float(pct) / 100.0 * h["base_income"]
-                ws_d += h["base_income"]
-        am_v = {k: v / ws_v * 100 for k, v in agg_v.items() if ws_v and v > 0}
-        am_d = {k: v / ws_d * 100 for k, v in agg_d.items() if ws_d and v > 0}
-        return am_v, ws_v, am_d, ws_d
+    # シミュレーション集計
+    def _make_amap(entries):
+        av, ad, wv, wd = {}, {}, 0.0, 0.0
+        for e in entries:
+            if e["v"]:
+                for k, p in e["m"].items():
+                    av[k] = av.get(k, 0.0) + float(p) / 100.0 * e["v"]
+                wv += e["v"]
+            if e["d"]:
+                for k, p in e["m"].items():
+                    ad[k] = ad.get(k, 0.0) + float(p) / 100.0 * e["d"]
+                wd += e["d"]
+        return ({k: v/wv*100 for k,v in av.items() if wv and v>0}, wv,
+                {k: v/wd*100 for k,v in ad.items() if wd and v>0}, wd)
 
-    holds_sim = []
-    for i, h in enumerate(holds):
-        row = sim_edited.iloc[i]
-        delta = float(row["追加口数"]) if pd.notna(row["追加口数"]) else 0.0
-        new_units = max(0.0, h["units"] + delta)
-        price = h["price"]
-        h2 = dict(h)
-        h2["units"] = new_units
-        h2["value"] = price * new_units if price else None
-        h2["base_income"] = h["base_pu"] * new_units if h["base_pu"] else None
-        holds_sim.append(h2)
+    _after, _summary_rows = [], []
+    _total_invest = _total_dist_chg = 0.0
+    for _i in range(len(sim_edited)):
+        _row  = sim_edited.iloc[_i]
+        _code = str(_row["コード"])
+        _curr = float(_row["現口数"] or 0)
+        _dlta = float(_row["増減口数"] or 0)
+        _dlta = max(_dlta, -_curr)          # 売却は現口数まで
+        _sprc = float(_row["単価(円)"] or 0)
+        _new  = _curr + _dlta
+        _px   = float(df[df["code"]==_code]["latest_price"].iloc[0]) \
+                if not df[df["code"]==_code].empty and \
+                   pd.notna(df[df["code"]==_code]["latest_price"].iloc[0]) else _sprc
+        _bpu  = _base_pu_all.get(_code) or 0.0
+        _amap = _amap_all.get(_code, {})
+        if _new > 0:
+            _after.append({"v": _px * _new if _px else None,
+                           "d": _bpu * _new if _bpu else None,
+                           "m": _amap})
+        if _dlta != 0:
+            _inv  = _dlta * _sprc
+            _dchg = _dlta * _bpu if _bpu else None
+            _total_invest   += _inv
+            _total_dist_chg += _dchg or 0.0
+            _summary_rows.append({
+                "コード":         _code,
+                "銘柄名":         _row["銘柄名"],
+                "増減":           f"{'+' if _dlta>0 else ''}{int(_dlta)}口",
+                "投下資金(円)":   f"{_inv:+,.0f}",
+                "分配金増減(円/年)": f"{_dchg:+,.0f}" if _dchg is not None else "—",
+            })
 
-    am_v_sim, ws_v_sim, am_d_sim, ws_d_sim = _compute_amap(holds_sim)
+    am_v_sim, ws_v_sim, am_d_sim, ws_d_sim = _make_amap(_after)
 
-    # 変更前後の円グラフ（評価額 / 分配金 × 前後 = 4枚）
+    # 変更前後 4枚の円グラフ
     sb1, sb2, sb3, sb4 = st.columns(4)
     with sb1:
         st.caption("変更前 評価額")
         if amap_val: donut_chart(amap_val, height=200, legend=False, inside_labels=True)
     with sb2:
         st.caption("変更後 評価額")
-        if am_v_sim: donut_chart(am_v_sim, height=200, legend=False, inside_labels=True)
-        if ws_v_sim: st.caption(f"計 {ws_v_sim:,.0f} 円")
+        if am_v_sim:
+            donut_chart(am_v_sim, height=200, legend=False, inside_labels=True)
+            st.caption(f"計 {ws_v_sim:,.0f} 円")
     with sb3:
         st.caption("変更前 分配金")
         if amap_dist: donut_chart(amap_dist, height=200, legend=False, inside_labels=True)
     with sb4:
         st.caption("変更後 分配金")
-        if am_d_sim: donut_chart(am_d_sim, height=200, legend=False, inside_labels=True)
-        if ws_d_sim: st.caption(f"計 {ws_d_sim:,.0f} 円/年")
+        if am_d_sim:
+            donut_chart(am_d_sim, height=200, legend=False, inside_labels=True)
+            st.caption(f"計 {ws_d_sim:,.0f} 円/年")
 
-    # 変化量サマリ（前後で変わった銘柄のみ）
-    deltas = [(h["code"], h["name"], float(sim_edited.iloc[i]["追加口数"] or 0))
-              for i, h in enumerate(holds)
-              if float(sim_edited.iloc[i]["追加口数"] or 0) != 0.0]
-    if deltas:
-        lines = []
-        for code, name, d in deltas:
-            h = next(hh for hh in holds if hh["code"] == code)
-            h2 = next(hh for hh in holds_sim if hh["code"] == code)
-            pct_v_before = amap_val.get(h["use_label"], 0)
-            pct_d_before = amap_dist.get(h["use_label"], 0)
-            pct_v_after  = am_v_sim.get(h["use_label"], 0)
-            pct_d_after  = am_d_sim.get(h["use_label"], 0)
-            inc_v = (h2["value"] or 0) - (h["value"] or 0)
-            inc_d = (h2["base_income"] or 0) - (h["base_income"] or 0)
-            arrow = "↑" if d > 0 else "↓"
-            lines.append(
-                f"**{code} {name[:8]}** {arrow}{abs(d):.0f}口  "
-                f"評価額 {'+' if inc_v>=0 else ''}{inc_v:,.0f}円  "
-                f"分配金 {'+' if inc_d>=0 else ''}{inc_d:,.0f}円/年  "
-                f"| {h['use_label']} 評価:{pct_v_before:.1f}%→{pct_v_after:.1f}%  "
-                f"分配:{pct_d_before:.1f}%→{pct_d_after:.1f}%"
-            )
-        st.markdown("\n".join(lines))
+    # 変更銘柄サマリ（口数が動いた行のみ）
+    if _summary_rows:
+        st.dataframe(pd.DataFrame(_summary_rows), hide_index=True, use_container_width=True)
+        st.caption(
+            f"合計 投下資金: **{_total_invest:+,.0f} 円** ／ "
+            f"分配金増減: **{_total_dist_chg:+,.0f} 円/年**"
+        )
 
     # 保有明細（HTMLテーブル → 並び替え後も交互行着色が崩れない）
     st.markdown("---")
