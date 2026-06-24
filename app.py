@@ -28,7 +28,7 @@ ASSET_COLS = {
 # 用途カラー（サマリのセル・円グラフで共通。文字は全て黒のため、黒が読める明度に統一）
 ASSET_COLOR = {
     "オフィス": "#7cb87c", "住居": "#b9cf66", "物流": "#8fc1e3",
-    "商業": "#f0c14b", "ホテル": "#ef9a9a", "ヘルスケア": "#a6b8e6",
+    "商業": "#f0c14b", "ホテル": "#ef9a9a", "ヘルスケア": "#b0b8bc",
     "底地": "#c9a063", "その他": "#cfd4d8",
 }
 # 「その他(asset_other)」の実際の内訳が判っている銘柄: code -> 用途名
@@ -780,7 +780,7 @@ def render_detail(df, divs, code):
 
 
 def donut_chart(amap: dict, height=300, legend=True, inside_labels=False):
-    order = list(PIE_COLORS.keys())
+    order = [k for k in PIE_COLORS.keys() if k in amap]
     pdf = pd.DataFrame({"用途": list(amap.keys()), "比率": list(amap.values())})
     pdf["ラベル"] = pdf["比率"].map(lambda v: f"{v:.0f}%" if v >= 7 else "")  # 小さいスライスは省略
     # 外半径を高さ基準で固定（列幅が狭くてもリングが潰れない）。凡例ぶんの余白も確保。
@@ -1437,6 +1437,32 @@ def main():
         '<span style="font-size:2rem;font-weight:800;color:#1f2937">🏢 J-REIT 分析ダッシュボード</span>'
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+<style>
+/* === 右固定ナビゲーション === */
+div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]) {
+    position: fixed !important;
+    right: 12px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    z-index: 9000 !important;
+    background: rgba(255,255,255,0.97) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 2px 20px rgba(0,0,0,0.14) !important;
+    border: 1px solid rgba(220,220,220,0.6) !important;
+    padding: 8px !important;
+    width: auto !important;
+}
+[data-testid="stSegmentedControl"],
+[data-testid="stSegmentedControl"] > div {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+    width: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
     page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
