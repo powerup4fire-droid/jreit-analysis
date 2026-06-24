@@ -1214,32 +1214,56 @@ def render_portfolio(df, divs):
         sorted(str(c) for c in df["code"] if str(c) not in holds_map)
     )
 
-    # 列構成 or 銘柄リストが変わったらエディタをリセット（v4: = 増減口数テキスト列）
+    # 銘柄リスト変化時はリセット（行インデックスずれ防止）
     _sim_db_key = "v4:" + ",".join(_all_codes)
     if st.session_state.get("_sim_db_key") != _sim_db_key:
         st.session_state["_sim_db_key"] = _sim_db_key
         st.session_state.pop("sim_editor", None)
         st.session_state.pop("_sim_prev_edits", None)
 
-    # リセットボタン押下後 or ページ遷移後の復元: リセット後は空dict、遷移後は保存値
-    _sim_prev_edits = st.session_state.get("_sim_prev_edits", {})
-
+    # _sim_base は常にデフォルト値（"0" / latest_price）。
+    # 同一ページ内の状態は sim_editor（Streamlit ネイティブ）が管理。
+    # ページ遷移またぎは _sim_prev_edits で復元する。
     _sim_rows = []
+    _code_to_row = {}   # code → _sim_base 行インデックス
     for _code in _all_codes:
         _r = df[df["code"] == _code]
         if _r.empty: continue
         _rec = _r.iloc[0]
         _h   = holds_map.get(_code)
-        _prev = _sim_prev_edits.get(_code, {})
-        _default_px = float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0.0
+        _code_to_row[_code] = len(_sim_rows)
         _sim_rows.append({
             "コード":   _code,
             "銘柄名":   _rec["name"][:14],
             "現口数":   float(_h["units"]) if _h else 0.0,
-            "増減口数": _prev.get("増減口数", "0"),
-            "単価(円)": _prev.get("単価(円)", _default_px),
+            "増減口数": "0",
+            "単価(円)": float(_rec["latest_price"]) if pd.notna(_rec.get("latest_price")) else 0.0,
         })
     _sim_base = pd.DataFrame(_sim_rows)
+
+    # ページ復帰時: _sim_prev_edits から sim_editor を再構築
+    if st.session_state.pop("_sim_needs_restore", False):
+        _prev_edits = st.session_state.get("_sim_prev_edits", {})
+        _edited_rows = {}
+        for _code, _prev in _prev_edits.items():
+            if _code not in _code_to_row:
+                continue
+            _ridx = _code_to_row[_code]
+            _r2   = df[df["code"] == _code]
+            _dpx2 = float(_r2.iloc[0]["latest_price"]) \
+                    if not _r2.empty and pd.notna(_r2.iloc[0]["latest_price"]) else 0.0
+            _entry = {}
+            _d = _prev.get("増減口数", "0")
+            if _d not in ("0", "0.0", ""):
+                _entry["増減口数"] = _d
+            _p = _prev.get("単価(円)", _dpx2)
+            if abs(float(_p) - _dpx2) > 0.01:
+                _entry["単価(円)"] = float(_p)
+            if _entry:
+                _edited_rows[_ridx] = _entry
+        st.session_state["sim_editor"] = {
+            "edited_rows": _edited_rows, "added_rows": [], "deleted_rows": []
+        }
 
     sim_edited = st.data_editor(
         _sim_base, use_container_width=True, hide_index=True,
@@ -1255,16 +1279,16 @@ def render_portfolio(df, divs):
                 help="購入・売却単価（投下資金の計算に使用）"),
         })
 
-    # 編集値をセッションに保存（ページ遷移後も復元できるよう）
+    # 毎レンダー後にページ遷移用バックアップを更新
     _save_prev: dict = {}
     for _si in range(len(sim_edited)):
-        _sr = sim_edited.iloc[_si]
-        _sc = str(_sr["コード"])
-        _sd = str(_sr["増減口数"])
-        _r2 = df[df["code"] == _sc]
+        _sr  = sim_edited.iloc[_si]
+        _sc  = str(_sr["コード"])
+        _sd  = str(_sr["増減口数"])
+        _r2  = df[df["code"] == _sc]
         _dpx = float(_r2.iloc[0]["latest_price"]) \
                if not _r2.empty and pd.notna(_r2.iloc[0]["latest_price"]) else 0.0
-        _sp = float(_sr["単価(円)"]) if pd.notna(_sr["単価(円)"]) else _dpx
+        _sp  = float(_sr["単価(円)"]) if pd.notna(_sr["単価(円)"]) else _dpx
         if _sd not in ("0", "0.0", "") or abs(_sp - _dpx) > 0.01:
             _save_prev[_sc] = {"増減口数": _sd, "単価(円)": _sp}
     st.session_state["_sim_prev_edits"] = _save_prev
@@ -1485,12 +1509,10 @@ def main():
     pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
     page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
     page = page or pages[0]
-    # ポートフォリオページへ遷移したとき sim_editor のデルタをクリア
-    # （_sim_prev_edits から base に値を戻すため widget 内部状態と二重適用させない）
     _prev_page = st.session_state.get("_nav_page", "")
     st.session_state["_nav_page"] = page
     if page == "💼 マイポートフォリオ" and _prev_page != "💼 マイポートフォリオ":
-        st.session_state.pop("sim_editor", None)
+        st.session_state["_sim_needs_restore"] = True
     st.divider()
     if page == "📋 ダッシュボード":
         render_dashboard(df, divs)
