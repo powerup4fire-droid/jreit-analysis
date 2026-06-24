@@ -902,22 +902,24 @@ def render_portfolio(df, divs):
                 if mode == "追加":
                     new = pd.concat([st.session_state["pf"], new], ignore_index=True)
                 st.session_state["pf"] = new.reset_index(drop=True)
-                st.session_state["pf_ver"] += 1
+                # エディタのウィジェット状態をリセット → 新データで再初期化させる
+                st.session_state.pop("pf_editor", None)
                 st.success(f"{len(new)} 行を読み込みました。")
                 st.rerun()
             elif new is not None:
                 st.warning("有効な銘柄行が見つかりませんでした（4桁コードを含む行が必要）。")
 
+    # 安定キー "pf_editor" を使う（動的キーはページ遷移でウィジェット状態が破棄される）
     edited = st.data_editor(
         st.session_state["pf"], num_rows="dynamic", use_container_width=True,
-        key=f"pf_editor_{st.session_state['pf_ver']}",
+        key="pf_editor",
         column_config={
             "コード": st.column_config.TextColumn("コード", help="4桁の証券コード", required=True),
             "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
             "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
         })
-    # 編集内容を session_state に即時反映 → ページ遷移後も手動編集が消えない
-    st.session_state["pf"] = edited
+    # .copy() で独立したコピーを保存（参照が無効化されるのを防ぐ）
+    st.session_state["pf"] = edited.copy()
 
     # 変更を検知してクラウドへ自動保存（書込回数を抑えるため内容ハッシュで差分判定）
     if cloud_store.enabled() and cloud_store.current_user():
