@@ -316,9 +316,18 @@ def annual_distribution(divs, code):
     if d.empty:
         return None, None
     latest = d["ym"].max()
-    win = d[latest - d["ym"] < 12].reset_index(drop=True)   # 直近12ヶ月
+    win = d[latest - d["ym"] <= 12].reset_index(drop=True)   # 直近12ヶ月（境界含む）
     if win.empty:
         return None, None
+
+    # 全履歴から決算頻度（期/年）を先に推定
+    if len(d) >= 2:
+        valid_ivl = d["ym"].diff().dropna()
+        valid_ivl = valid_ivl[valid_ivl > 0]
+        avg_interval = valid_ivl.mean() if len(valid_ivl) > 0 else 6
+    else:
+        avg_interval = 6
+    periods_per_year = max(1, min(round(12 / avg_interval), 12))
 
     # 投資口分割検出: ウィンドウ内で前期比60%未満に急減した場合はスプリット後インデックスを記録
     split_from = 0
@@ -330,21 +339,26 @@ def annual_distribution(divs, code):
 
     if split_from > 0:
         post = win.iloc[split_from:].reset_index(drop=True)
-        # 全履歴から決算頻度（期/年）を推定
-        if len(d) >= 2:
-            valid_ivl = d["ym"].diff().dropna()
-            valid_ivl = valid_ivl[valid_ivl > 0]
-            avg_interval = valid_ivl.mean() if len(valid_ivl) > 0 else 6
-        else:
-            avg_interval = 6
-        periods_per_year = max(1, min(round(12 / avg_interval), 12))
         annual_factor = periods_per_year / len(post)
         tot = float(post["total_distribution"].sum(skipna=True)) * annual_factor
         exc_raw = post["excess_distribution"].sum(skipna=True)
         exc = float(exc_raw) * annual_factor if pd.notna(exc_raw) else 0.0
     else:
-        tot = win["total_distribution"].sum(skipna=True)
-        exc = win["excess_distribution"].sum(skipna=True)
+        valid_count = int(win["total_distribution"].notna().sum())
+        if valid_count == 0:
+            return None, None
+        tot_raw = float(win["total_distribution"].sum(skipna=True))
+        exc_raw = win["excess_distribution"].sum(skipna=True)
+        # 有効期数が年あたり期数を下回る場合（regex_miss等でデータ欠落）は比例補完
+        if valid_count < periods_per_year:
+            scale = periods_per_year / valid_count
+            tot = tot_raw * scale
+            exc = float(exc_raw) * scale if pd.notna(exc_raw) else 0.0
+        else:
+            # 期数が多すぎる場合（境界拡張で13ヶ月分入った等）も正規化
+            scale = periods_per_year / valid_count if valid_count > periods_per_year else 1.0
+            tot = tot_raw * scale
+            exc = float(exc_raw) * scale if pd.notna(exc_raw) else 0.0
 
     return (float(tot) if pd.notna(tot) else None,
             float(exc) if pd.notna(exc) else None)
