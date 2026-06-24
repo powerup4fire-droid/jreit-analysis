@@ -890,6 +890,9 @@ def render_portfolio(df, divs):
             "gain": ((price - cost) * units) if (price is not None and cost is not None) else None,
             "annual_income": (annual_pu * units) if annual_pu is not None else None,
             "annual_excess": (excess_pu * units) if excess_pu is not None else None,
+            "annual_pu": annual_pu,
+            "yield_on_cost": (annual_pu / cost * 100) if (annual_pu and cost) else None,
+            "yield_on_value": (annual_pu / price * 100) if (annual_pu and price) else None,
             "yield": rec["yield_total"], "use_primary": rec["use_primary"],
             "asset_pct": asset_map(rec),
             "fund_ug_pct": rec.get("unrealized_gain_pct"),
@@ -905,12 +908,14 @@ def render_portfolio(df, divs):
     tot_income = sum(h["annual_income"] for h in holds if h["annual_income"] is not None)
     tot_excess = sum(h["annual_excess"] for h in holds if h["annual_excess"] is not None)
     pf_yield = (tot_income / tot_val * 100) if tot_val else None
+    pf_yield_on_cost = (tot_income / tot_acq * 100) if (tot_acq and tot_income) else None
 
-    m = st.columns(4)
+    m = st.columns(5)
     m[0].metric("評価額合計", fmt(tot_val, 0, " 円"))
-    m[1].metric("ポートフォリオ利回り", fmt(pf_yield, 2, "%"), help="年間分配金合計 ÷ 評価額合計（実績ベース）")
-    m[2].metric("年間分配金（見込み）", fmt(tot_income, 0, " 円"), help="直近2期＝1年の実績を据え置いた推定")
-    m[3].metric("含み益", fmt(tot_gain, 0, " 円") if has_cost else "—",
+    m[1].metric("評価額ベース利回り", fmt(pf_yield, 2, "%"), help="年間分配金合計 ÷ 評価額合計（実績ベース）")
+    m[2].metric("取得価格ベース利回り", fmt(pf_yield_on_cost, 2, "%"), help="年間分配金合計 ÷ 取得額合計")
+    m[3].metric("年間分配金（見込み）", fmt(tot_income, 0, " 円"), help="直近2期＝1年の実績を据え置いた推定")
+    m[4].metric("含み益", fmt(tot_gain, 0, " 円") if has_cost else "—",
                 f"取得額 {fmt(tot_acq,0)} 円" if has_cost else "取得単価未入力",
                 delta_color="normal")
     if tot_income:
@@ -933,32 +938,35 @@ def render_portfolio(df, divs):
     st.caption("※ 本日を基準（0円）に、直近実績の年間分配金が今後も継続すると仮定した推定値です。")
 
     # 用途構成（評価額加重）
-    cL, cR = st.columns([1, 1])
-    with cL:
-        st.markdown("**運用物件タイプ（評価額加重）**")
-        agg = {}
-        wsum = 0.0
-        for h in holds:
-            if h["value"] is None:
-                continue
-            for ja, v in h["asset_pct"].items():
-                agg[ja] = agg.get(ja, 0.0) + float(v) / 100.0 * h["value"]
-            wsum += h["value"]
-        amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
-        if amap:
-            donut_chart(amap, height=260, inside_labels=True)
-            st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1])))
-        else:
-            st.caption("構成データなし")
-    with cR:
-        st.markdown("**保有明細**")
-        det = pd.DataFrame([{
-            "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
-            "評価額": fmt(h["value"], 0), "含み益": fmt(h["gain"], 0) if h["gain"] is not None else "—",
-            "年間分配金": fmt(h["annual_income"], 0),
-            "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
-        } for h in holds])
-        st.dataframe(det, use_container_width=True, hide_index=True)
+    st.markdown("**運用物件タイプ（評価額加重）**")
+    agg = {}
+    wsum = 0.0
+    for h in holds:
+        if h["value"] is None:
+            continue
+        for ja, v in h["asset_pct"].items():
+            agg[ja] = agg.get(ja, 0.0) + float(v) / 100.0 * h["value"]
+        wsum += h["value"]
+    amap = {k: v / wsum * 100 for k, v in agg.items() if wsum and v > 0}
+    if amap:
+        donut_chart(amap, height=220, inside_labels=True)
+        st.caption("　".join(f"{k} {v:.1f}%" for k, v in sorted(amap.items(), key=lambda x: -x[1])))
+    else:
+        st.caption("構成データなし")
+
+    st.markdown("**保有明細**")
+    det = pd.DataFrame([{
+        "コード": h["code"], "名称": h["name"], "口数": int(h["units"]),
+        "評価額(円)": fmt(h["value"], 0),
+        "含み益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
+        "年間分配金(円/口)": fmt(h["annual_pu"], 0) if h["annual_pu"] is not None else "—",
+        "年間分配金合計(円)": fmt(h["annual_income"], 0),
+        "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
+        "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
+        "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
+    } for h in holds])
+    st.dataframe(det, use_container_width=True, hide_index=True)
+    st.caption("※ 年間分配金は直近12ヶ月の実績合計。取得利回り＝年間分配金(円/口)÷取得単価、評価利回り＝年間分配金(円/口)÷現在株価。")
 
 
 # ===========================================================================
