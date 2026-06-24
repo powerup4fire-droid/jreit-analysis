@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 import altair as alt   # Streamlit同梱（追加インストール不要）
 import cloud_store      # Cloudflare KV 永続化（ログインユーザー単位・端末間同期）
 
@@ -1354,6 +1353,7 @@ def render_portfolio(df, divs):
         "評価損益(円)": fmt(h["gain"], 0) if h["gain"] is not None else "—",
         "取得利回り": fmt(h["yield_on_cost"], 2, "%") if h["yield_on_cost"] is not None else "—",
         "評価利回り": fmt(h["yield_on_value"], 2, "%") if h["yield_on_value"] is not None else "—",
+        "利益超過分配金": "✓" if (h.get("excess_pu") is not None and h["excess_pu"] > 0.5) else "",
         "年間分配金(円/口)※": fmt(h["base_pu"], 0) if h["base_pu"] is not None else "—",
         "年間分配金合計(円)": fmt(h["base_income"], 0) if h["base_income"] is not None else "—",
         "含み益率(ファンド)": fmt(h["fund_ug_pct"], 1, "%"),
@@ -1376,7 +1376,7 @@ def render_portfolio(df, divs):
     if det_rows:
         det_cols = list(det_rows[0].keys())
         det_right = {"口数", "評価額(円)", "評価損益(円)", "年間分配金(円/口)※", "年間分配金合計(円)"}
-        det_center = {"タイプ", "取得利回り", "評価利回り", "評価損益率", "含み益率(ファンド)"}
+        det_center = {"タイプ", "取得利回り", "評価利回り", "利益超過分配金", "評価損益率", "含み益率(ファンド)"}
         det_head = "".join(
             f'<th style="position:sticky;top:0;background:#eef1f4;color:{FONT};padding:7px 10px;'
             f'white-space:nowrap;border-bottom:2px solid #c8ccd0;text-align:center">{c}</th>'
@@ -1402,6 +1402,12 @@ def render_portfolio(df, divs):
                     tds.append(
                         f'<td style="background:{tbg};color:{FONT};font-weight:700;'
                         f'text-align:center;white-space:nowrap;padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
+                elif c == "利益超過分配金":
+                    color = "#16a34a" if v == "✓" else FONT
+                    tds.append(
+                        f'<td style="background:{row_bg};color:{color};font-weight:bold;'
+                        f'text-align:center;white-space:nowrap;font-size:15px;'
+                        f'padding:5px 12px;border-bottom:1px solid #eee">{v}</td>')
                 else:
                     align = "right" if c in det_right else ("center" if c in det_center else "left")
                     tds.append(
@@ -1439,187 +1445,43 @@ def main():
         f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
         '</div>', unsafe_allow_html=True)
 
-    # ── Smart Header CSS ─────────────────────────────────────────────────────
-    # st.markdown で CSS のみ注入（DOMPurify が script を除去するため JS はここに書かない）
+    # ─── グローバル CSS（Manage app 非表示 + サイドバー右固定） ─────────────
     st.markdown("""
 <style>
-/* ── Smart Header ── */
-#sn-desktop {
-    position: fixed;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 9999;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    background: rgba(255,255,255,0.97);
-    border-radius: 12px;
-    box-shadow: 0 2px 20px rgba(0,0,0,.15);
-    border: 1px solid rgba(200,200,200,.5);
-    padding: 8px;
-}
-#sn-mobile {
-    position: fixed;
-    top: 0; left: 0; right: 0;
-    z-index: 9999;
-    background: rgba(255,255,255,0.95);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    box-shadow: 0 2px 12px rgba(0,0,0,.12);
-    padding: 8px 12px;
-    display: flex;
-    flex-direction: row;
-    gap: 4px;
-    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
-}
-#sn-mobile.sn-hide { transform: translateY(-110%); }
-.sn-btn {
-    display: block;
-    padding: 8px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #374151;
-    background: #f3f4f6;
-    border: none;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background .15s, color .15s;
-    font-family: inherit;
-}
-.sn-btn.sn-active { background: #ff4b4b; color: #fff; }
-.sn-btn:hover:not(.sn-active) { background: #e5e7eb; }
-
-/* 元の segmented_control を画面外に退避（DOM は残し JS からクリック可能にする） */
-div[data-testid="element-container"]:has([data-testid="stSegmentedControl"]),
-div[data-testid="stElementContainer"]:has([data-testid="stSegmentedControl"]) {
-    position: absolute !important;
-    left: -9999px !important;
-    height: 0 !important;
-    overflow: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-}
-
-/* Manage app ボタン・フッター非表示 */
+/* Streamlit UI 余計なボタン非表示 */
 [data-testid="manage-app-button"],
 [data-testid="stDeployButton"],
+[data-testid="stBottom"],
 .stDeployButton,
-#MainMenu,
-footer[data-testid="stFooter"] { display: none !important; }
+#MainMenu, footer { display: none !important; }
 
-@media (max-width: 767px) {
-    #sn-desktop { display: none !important; }
-    [data-testid="stMainBlockContainer"] { padding-top: 58px !important; }
-}
+/* ── デスクトップ: サイドバーを右固定に移動 ── */
 @media (min-width: 768px) {
-    #sn-mobile { display: none !important; }
+    section[data-testid="stSidebar"] {
+        left: auto !important;
+        right: 0 !important;
+    }
+    /* 折りたたみ時は右にスライドアウト */
+    section[data-testid="stSidebar"][aria-expanded="false"] {
+        transform: translateX(100%) !important;
+    }
+    /* メインコンテンツの左マージン除去（サイドバーが右移動したため不要） */
+    [data-testid="stMain"] { margin-left: 0 !important; }
 }
+/* 折りたたみボタン非表示（ナビを常時表示） */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="collapsedControl"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-    # ── Smart Header JS ──────────────────────────────────────────────────────
-    # components.html は iframe で実行される。iframe は allow-same-origin のため
-    # window.parent.document でホストページの DOM を操作できる。
-    components.html("""
-<script>
-(function(){
-    var p = window.parent;
-    if (p._snInit) return;
-    p._snInit = true;
+    # ─── 右サイドナビゲーション（sidebar を CSS で右側に配置） ─────────────
+    with st.sidebar:
+        page = st.radio(
+            "ページ",
+            ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"],
+            label_visibility="collapsed",
+        )
 
-    var PAGES = ['📋 ダッシュボード', '⚖️ 銘柄比較', '💼 マイポートフォリオ'];
-    var pd = p.document;
-
-    function getStBtns() {
-        return pd.querySelectorAll('[data-testid="stSegmentedControl"] button');
-    }
-
-    function getActiveIdx() {
-        var btns = getStBtns();
-        for (var i = 0; i < btns.length; i++) {
-            var b = btns[i];
-            if (b.getAttribute('aria-pressed') === 'true' ||
-                b.getAttribute('aria-checked') === 'true' ||
-                b.getAttribute('aria-selected') === 'true') { return i; }
-        }
-        return p._snPage || 0;
-    }
-
-    function syncActive(idx) {
-        pd.querySelectorAll('.sn-btn').forEach(function(b, i) {
-            b.classList.toggle('sn-active', i === idx);
-        });
-    }
-
-    function clickPage(idx) {
-        var btns = getStBtns();
-        if (btns[idx]) btns[idx].click();
-        p._snPage = idx;
-        syncActive(idx);
-    }
-
-    function buildNav(id) {
-        if (pd.getElementById(id)) return;
-        var nav = pd.createElement('div');
-        nav.id = id;
-        PAGES.forEach(function(name, i) {
-            var btn = pd.createElement('button');
-            btn.className = 'sn-btn';
-            btn.textContent = name;
-            (function(idx){ btn.addEventListener('click', function(){ clickPage(idx); }); })(i);
-            nav.appendChild(btn);
-        });
-        pd.body.appendChild(nav);
-    }
-
-    var lastY = 0, ticking = false;
-    function onScroll() {
-        if (ticking) return;
-        ticking = true;
-        p.requestAnimationFrame(function() {
-            var nav = pd.getElementById('sn-mobile');
-            if (!nav) { ticking = false; return; }
-            var el = pd.querySelector('[data-testid="stMain"]');
-            var y = el ? el.scrollTop : (p.pageYOffset || pd.documentElement.scrollTop);
-            if (y <= 30) nav.classList.remove('sn-hide');
-            else if (y - lastY > 8) nav.classList.add('sn-hide');
-            else if (lastY - y > 8) nav.classList.remove('sn-hide');
-            lastY = y;
-            ticking = false;
-        });
-    }
-
-    function init() {
-        buildNav('sn-desktop');
-        buildNav('sn-mobile');
-        syncActive(getActiveIdx());
-
-        var mainEl = pd.querySelector('[data-testid="stMain"]');
-        if (mainEl) mainEl.addEventListener('scroll', onScroll, {passive: true});
-        p.addEventListener('scroll', onScroll, {passive: true});
-
-        var obs = new p.MutationObserver(function() { syncActive(getActiveIdx()); });
-        obs.observe(pd.body, {
-            subtree: true, attributes: true,
-            attributeFilter: ['aria-pressed', 'aria-checked', 'aria-selected']
-        });
-    }
-
-    var tries = 0;
-    function tryInit() {
-        if (pd.querySelector('[data-testid="stSegmentedControl"]')) { init(); }
-        else if (tries++ < 40) { p.setTimeout(tryInit, 150); }
-    }
-    tryInit();
-})();
-</script>
-""", height=0)
-
-    pages = ["📋 ダッシュボード", "⚖️ 銘柄比較", "💼 マイポートフォリオ"]
-    page = st.segmented_control("画面", pages, default=pages[0], label_visibility="collapsed")
-    page = page or pages[0]
     st.divider()
     if page == "📋 ダッシュボード":
         render_dashboard(df, divs)
