@@ -25,13 +25,26 @@ def _line(d, p0, p1, color, w):
         d.ellipse([x - r, y - r, x + r, y + r], fill=color)
 
 
+# アートワークを中心基準で拡大して余白を詰める（iOSホーム画面でのバランス最適化）。
+LEFT_SCALE = 1.34
+
+
 def draw_left(S):
-    """ドーナツ＋ビル＋緑直線矢印。RGBA、全面白（不透明）。"""
+    """ドーナツ＋ビル＋緑直線矢印。RGBA、全面白（不透明）。中心基準で LEFT_SCALE 倍に拡大。"""
     img = Image.new("RGBA", (S, S), WHITE + (255,))
     d = ImageDraw.Draw(img)
+    sc = LEFT_SCALE
     cx = cy = 0.5 * S
-    R = 0.325 * S
-    inner = 0.20 * S
+
+    def fx(fr):   # 0..1 座標を中心基準で拡大して px へ
+        return 0.5 * S + (fr - 0.5) * sc * S
+
+    def fl(fr):   # 長さフラクションを拡大して px へ
+        return fr * sc * S
+
+    R = fl(0.325)
+    ringw = fl(0.125)
+    inner = R - ringw
     bbox = [cx - R, cy - R, cx + R, cy + R]
     start = -90.0
     for col, deg in ((BLUE, 144), (GREEN, 108), (AMBER, 72), (RED, 36)):
@@ -40,11 +53,11 @@ def draw_left(S):
     d.ellipse([cx - inner, cy - inner, cx + inner, cy + inner], fill=WHITE)
     # ビル2棟
     for (rx, ry, rw, rh) in ((0.408, 0.500, 0.075, 0.167), (0.500, 0.433, 0.075, 0.233)):
-        d.rounded_rectangle([rx * S, ry * S, (rx + rw) * S, (ry + rh) * S],
-                            radius=0.01 * S, fill=NAVY)
+        d.rounded_rectangle([fx(rx), fx(ry), fx(rx + rw), fx(ry + rh)],
+                            radius=fl(0.01), fill=NAVY)
     # 緑直線矢印
-    _line(d, (0.375 * S, 0.625 * S), (0.583 * S, 0.450 * S), GREEN, int(0.026 * S))
-    d.polygon([(0.629 * S, 0.413 * S), (0.600 * S, 0.471 * S), (0.563 * S, 0.429 * S)], fill=GREEN)
+    _line(d, (fx(0.375), fx(0.625)), (fx(0.583), fx(0.450)), GREEN, int(fl(0.026)))
+    d.polygon([(fx(0.629), fx(0.413)), (fx(0.600), fx(0.471)), (fx(0.563), fx(0.429))], fill=GREEN)
     return img
 
 
@@ -95,7 +108,13 @@ def main():
     # favicon.ico（複数サイズ内包）
     ico = render(draw_right, 256, rounded=True)
     ico.save(OUT / "favicon.ico", sizes=[(16, 16), (32, 32), (48, 48)])
+    # static/ へ同期（jsDelivr公開配信元 = iPhoneホーム画面アイコン）
+    static = ROOT / "static"
+    static.mkdir(parents=True, exist_ok=True)
+    for nm in ("apple-touch-icon.png", "icon-192.png", "icon-512.png"):
+        (static / nm).write_bytes((OUT / nm).read_bytes())
     print("wrote:", *(p.name for p in sorted(OUT.iterdir())))
+    print("synced static/:", *(p.name for p in sorted(static.glob("*.png"))))
 
 
 if __name__ == "__main__":

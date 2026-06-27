@@ -79,7 +79,7 @@ def header_title_html(size_rem: float = 1.7) -> str:
 # 公開GitHubリポジトリの jsDelivr CDN を使う（?v= でiOS側キャッシュをバスト）。
 APPLE_ICON_PUBLIC_URL = (
     "https://cdn.jsdelivr.net/gh/powerup4fire-droid/jreit-analysis@main/"
-    "static/apple-touch-icon.png?v=2"
+    "static/apple-touch-icon.png?v=3"
 )
 
 
