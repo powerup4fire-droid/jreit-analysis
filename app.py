@@ -73,20 +73,23 @@ def header_title_html(size_rem: float = 1.7) -> str:
     )
 
 
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
+# iPhoneホーム画面アイコンは「認証不要の公開URL」で配信する。
+# 本番(Streamlit Cloud)は非公開アプリで /app/static/ も認証ゲートの裏にあり、
+# Safari の Add-to-Home-Screen のアイコン取得が login にリダイレクトされて失敗するため、
+# 公開GitHubリポジトリの jsDelivr CDN を使う（?v= でiOS側キャッシュをバスト）。
+APPLE_ICON_PUBLIC_URL = (
+    "https://cdn.jsdelivr.net/gh/powerup4fire-droid/jreit-analysis@main/"
+    "static/apple-touch-icon.png?v=2"
+)
 
 
 def _inject_apple_icon() -> None:
-    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを <head> へ注入。
-    Safari は data: URI を無視するため、Streamlit静的配信(app/static/)の実URLを使う。"""
-    if not (_STATIC_DIR / "apple-touch-icon.png").exists():
-        return
+    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを <head> へ注入。"""
     components.html(
         """<script>
         const win = window.parent;
         const head = win.document.head;
-        const base = win.location.origin + win.location.pathname.replace(/\\/+$/, "");
-        const icon = base + "/app/static/apple-touch-icon.png";
+        const icon = "__ICON__";
         function setLink(rel, href){
           let l = win.document.querySelector("link[rel='"+rel+"']");
           if(!l){ l = win.document.createElement('link'); l.rel = rel; head.appendChild(l); }
@@ -103,7 +106,7 @@ def _inject_apple_icon() -> None:
         setMeta('mobile-web-app-capable', 'yes');
         setMeta('apple-mobile-web-app-status-bar-style', 'default');
         setMeta('apple-mobile-web-app-title', 'J-REIT分析');
-        </script>""",
+        </script>""".replace("__ICON__", APPLE_ICON_PUBLIC_URL),
         height=0,
     )
 
