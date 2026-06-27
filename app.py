@@ -84,28 +84,38 @@ APPLE_ICON_PUBLIC_URL = (
 
 
 def _inject_apple_icon() -> None:
-    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを <head> へ注入。"""
+    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを注入。
+
+    Streamlit Cloud はアプリを iframe で包んだ「外側ページ」を配信し、その外側に
+    apple-touch-icon=/-/build/favicon_256.png（Streamlit標準）を持つ。Safari の
+    Add-to-Home はその外側を読むため、外側(window.top, 同一オリジン)の <head> を上書きする。
+    """
     components.html(
         """<script>
-        const win = window.parent;
-        const head = win.document.head;
-        const icon = "__ICON__";
-        function setLink(rel, href){
-          let l = win.document.querySelector("link[rel='"+rel+"']");
-          if(!l){ l = win.document.createElement('link'); l.rel = rel; head.appendChild(l); }
-          l.href = href;
-        }
-        function setMeta(name, content){
-          let m = win.document.querySelector("meta[name='"+name+"']");
-          if(!m){ m = win.document.createElement('meta'); m.name = name; head.appendChild(m); }
-          m.content = content;
-        }
-        setLink('apple-touch-icon', icon);
-        setLink('apple-touch-icon-precomposed', icon);
-        setMeta('apple-mobile-web-app-capable', 'yes');
-        setMeta('mobile-web-app-capable', 'yes');
-        setMeta('apple-mobile-web-app-status-bar-style', 'default');
-        setMeta('apple-mobile-web-app-title', 'J-REIT分析');
+        (function(){
+          function topDoc(){
+            try{ if(window.top && window.top.document && window.top.document.head) return window.top.document; }catch(e){}
+            try{ if(window.parent && window.parent.document && window.parent.document.head) return window.parent.document; }catch(e){}
+            return document;
+          }
+          var doc = topDoc(), head = doc.head, icon = "__ICON__";
+          function setLink(rel, href){
+            var l = doc.querySelector("link[rel='"+rel+"']");
+            if(!l){ l = doc.createElement('link'); l.setAttribute('rel', rel); head.appendChild(l); }
+            l.setAttribute('href', href);
+          }
+          function setMeta(name, content){
+            var m = doc.querySelector("meta[name='"+name+"']");
+            if(!m){ m = doc.createElement('meta'); m.setAttribute('name', name); head.appendChild(m); }
+            m.setAttribute('content', content);
+          }
+          setLink('apple-touch-icon', icon);
+          setLink('apple-touch-icon-precomposed', icon);
+          setMeta('apple-mobile-web-app-capable', 'yes');
+          setMeta('mobile-web-app-capable', 'yes');
+          setMeta('apple-mobile-web-app-status-bar-style', 'default');
+          setMeta('apple-mobile-web-app-title', 'J-REIT分析');
+        })();
         </script>""".replace("__ICON__", APPLE_ICON_PUBLIC_URL),
         height=0,
     )
