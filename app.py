@@ -59,7 +59,7 @@ def _icon_data_uri(name: str) -> str:
 
 FAVICON_PATH = str(_ICON_DIR / "favicon-64.png")         # PCタブ favicon（緑棒+金矢印）
 HEADER_ICON_URI = _icon_data_uri("header-icon.png")      # ページ左上（緑棒+金矢印）
-APPLE_ICON_URI = _icon_data_uri("apple-touch-icon.png")  # iPhoneホーム画面（ドーナツ+ビル）
+# iPhoneホーム画面アイコンは static/ から実URLで配信（_inject_apple_icon）
 
 
 def header_title_html(size_rem: float = 1.7) -> str:
@@ -73,30 +73,37 @@ def header_title_html(size_rem: float = 1.7) -> str:
     )
 
 
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
 def _inject_apple_icon() -> None:
-    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを <head> へ注入。"""
-    if not APPLE_ICON_URI:
+    """iPhoneのホーム画面追加用に apple-touch-icon と web-app メタを <head> へ注入。
+    Safari は data: URI を無視するため、Streamlit静的配信(app/static/)の実URLを使う。"""
+    if not (_STATIC_DIR / "apple-touch-icon.png").exists():
         return
     components.html(
         """<script>
-        const head = window.parent.document.head;
+        const win = window.parent;
+        const head = win.document.head;
+        const base = win.location.origin + win.location.pathname.replace(/\\/+$/, "");
+        const icon = base + "/app/static/apple-touch-icon.png";
         function setLink(rel, href){
-          let l = window.parent.document.querySelector("link[rel='"+rel+"']");
-          if(!l){ l = window.parent.document.createElement('link'); l.rel = rel; head.appendChild(l); }
+          let l = win.document.querySelector("link[rel='"+rel+"']");
+          if(!l){ l = win.document.createElement('link'); l.rel = rel; head.appendChild(l); }
           l.href = href;
         }
         function setMeta(name, content){
-          let m = window.parent.document.querySelector("meta[name='"+name+"']");
-          if(!m){ m = window.parent.document.createElement('meta'); m.name = name; head.appendChild(m); }
+          let m = win.document.querySelector("meta[name='"+name+"']");
+          if(!m){ m = win.document.createElement('meta'); m.name = name; head.appendChild(m); }
           m.content = content;
         }
-        setLink('apple-touch-icon', '__ICON__');
-        setLink('apple-touch-icon-precomposed', '__ICON__');
+        setLink('apple-touch-icon', icon);
+        setLink('apple-touch-icon-precomposed', icon);
         setMeta('apple-mobile-web-app-capable', 'yes');
         setMeta('mobile-web-app-capable', 'yes');
         setMeta('apple-mobile-web-app-status-bar-style', 'default');
         setMeta('apple-mobile-web-app-title', 'J-REIT分析');
-        </script>""".replace("__ICON__", APPLE_ICON_URI),
+        </script>""",
         height=0,
     )
 
