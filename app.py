@@ -162,6 +162,36 @@ def load(table: str) -> pd.DataFrame:
         con.close()
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_live_prices(codes: tuple) -> dict:
+    """アクセス時に yfinance で最新終値を一括取得。{code: (close, 'YYYY-MM-DD')}。
+    取得失敗・未対応銘柄はスキップ（DBのキャッシュ値を使う）。10分キャッシュで負荷を抑制。"""
+    if not codes:
+        return {}
+    try:
+        import yfinance as yf
+    except Exception:
+        return {}
+    tickers = [f"{c}.T" for c in codes]
+    try:
+        data = yf.download(tickers, period="7d", interval="1d", group_by="ticker",
+                           threads=True, progress=False, auto_adjust=False)
+    except Exception:
+        return {}
+    if data is None or getattr(data, "empty", True):
+        return {}
+    out: dict = {}
+    for c in codes:
+        t = f"{c}.T"
+        try:
+            s = (data["Close"] if len(tickers) == 1 else data[t]["Close"]).dropna()
+            if len(s):
+                out[c] = (round(float(s.iloc[-1]), 1), s.index[-1].strftime("%Y-%m-%d"))
+        except Exception:
+            continue
+    return out
+
+
 # 単位 → 直近の取引日数（営業日換算。200日=直近200営業日でMA200と整合）
 UNIT_ROWS = {"日": 1, "週": 5, "月": 21, "年": 252}
 
@@ -426,6 +456,23 @@ def build_frame():
     df["use_label"] = uinfo.map(lambda x: x[1])
     df["use_types"] = uinfo.map(lambda x: x[2])
     df["type_jp"] = df.apply(derive_type, axis=1)
+
+    # アクセス時に最新終値で latest_price を上書き（取得できた銘柄のみ。失敗時はDB値を維持）。
+    # これにより価格・移動平均乖離・ポートフォリオ評価が最新終値に追従する。
+    df["code"] = df["code"].astype(str)
+    _live = fetch_live_prices(tuple(sorted(df["code"].unique())))
+    _live_n, _live_asof = 0, None
+    if _live:
+        _px = df["code"].map(lambda c: _live.get(c, (None, None))[0])
+        _as = df["code"].map(lambda c: _live.get(c, (None, None))[1])
+        _mask = _px.notna()
+        df.loc[_mask, "latest_price"] = _px[_mask].astype(float)
+        if "price_asof" in df.columns:
+            df.loc[_mask, "price_asof"] = _as[_mask]
+        _live_n = int(_mask.sum())
+        _asof_vals = _as[_mask].dropna()
+        _live_asof = _asof_vals.mode().iat[0] if not _asof_vals.empty else None
+
     df["mktcap_oku"] = df["market_cap"] / 1e8
     df["dev_200d_pct"] = np.where(df["ma_200d"].notna() & df["latest_price"].notna() & (df["ma_200d"] != 0),
                                   (df["latest_price"] - df["ma_200d"]) / df["ma_200d"] * 100, np.nan)
@@ -451,6 +498,14 @@ def build_frame():
         df["yield_total"].notna(),
         (df["yield_total"] * (1.0 - exc6_ratio)).round(2),
         np.nan,
+    )
+
+    # 株価の鮮度情報（ヘッダ表示用）。ライブ取得できた銘柄数と日付、DBキャッシュ日付。
+    df.attrs["live_count"] = _live_n
+    df.attrs["live_asof"] = _live_asof
+    _pa = metrics["price_asof"] if "price_asof" in metrics.columns else None
+    df.attrs["price_asof_cache"] = (
+        _pa.dropna().mode().iat[0] if _pa is not None and not _pa.dropna().empty else None
     )
     return df, divs, runs, reits
 
@@ -1572,6 +1627,14 @@ def main():
     ts = "—"
     if runs is not None and not runs.empty:
         ts = runs.sort_values("finished_at").iloc[-1].get("finished_at", "—")
+    # 株価の鮮度表示（ライブ取得できていれば最新終値日、できなければキャッシュ日）
+    _lc = int(df.attrs.get("live_count", 0) or 0)
+    _la = df.attrs.get("live_asof")
+    if _lc and _la:
+        price_note = f'株価 {_la} 終値（ライブ {_lc}/{len(reits)}銘柄）'
+    else:
+        _pac = df.attrs.get("price_asof_cache")
+        price_note = f'株価 {_pac} 終値（キャッシュ）' if _pac else 'キャッシュ参照のみ'
     # タイトル＋メタ情報を1行のヘッダにまとめて余白を最適化
     st.markdown(
         '<div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;'
@@ -1580,7 +1643,7 @@ def main():
         'font-size:2rem;font-weight:800;color:#1f2937">'
         f'<img src="{HEADER_ICON_URI}" alt="" style="width:38px;height:38px">'
         'J-REIT 分析ダッシュボード</span>'
-        f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　キャッシュ参照のみ</span>'
+        f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　{price_note}</span>'
         '</div>', unsafe_allow_html=True)
 
     st.markdown("""
