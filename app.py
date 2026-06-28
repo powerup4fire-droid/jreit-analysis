@@ -1624,9 +1624,6 @@ def main():
         st.markdown(header_title_html(), unsafe_allow_html=True)
         st.warning("データが空です。"); return
 
-    ts = "—"
-    if runs is not None and not runs.empty:
-        ts = runs.sort_values("finished_at").iloc[-1].get("finished_at", "—")
     # 株価の鮮度表示（ライブ取得できていれば最新終値日、できなければキャッシュ日）
     _lc = int(df.attrs.get("live_count", 0) or 0)
     _la = df.attrs.get("live_asof")
@@ -1643,7 +1640,7 @@ def main():
         'font-size:2rem;font-weight:800;color:#1f2937">'
         f'<img src="{HEADER_ICON_URI}" alt="" style="width:38px;height:38px">'
         'J-REIT 分析ダッシュボード</span>'
-        f'<span style="font-size:12px;color:#8a909a">最終更新 {ts}　・　銘柄 {len(reits)}　・　{price_note}</span>'
+        f'<span style="font-size:12px;color:#8a909a">銘柄 {len(reits)}　・　{price_note}</span>'
         '</div>', unsafe_allow_html=True)
 
     st.markdown("""
