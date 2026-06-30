@@ -114,6 +114,13 @@ def _inject_apple_icon() -> None:
           setMeta('apple-mobile-web-app-capable', 'yes');
           setMeta('mobile-web-app-capable', 'yes');
           setMeta('apple-mobile-web-app-status-bar-style', 'default');
+          // Streamlit Cloud 外側のオーナー用 "Manage app" ボタンを非表示（邪魔なので）。
+          if(!doc.getElementById('__hide_manage_app__')){
+            var st = doc.createElement('style');
+            st.id = '__hide_manage_app__';
+            st.textContent = '[data-testid="manage-app-button"]{display:none!important;}';
+            head.appendChild(st);
+          }
           setMeta('apple-mobile-web-app-title', 'J-REIT分析');
         })();
         </script>""".replace("__ICON__", APPLE_ICON_PUBLIC_URL),
