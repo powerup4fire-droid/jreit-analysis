@@ -1196,15 +1196,28 @@ def render_portfolio(df, divs):
             elif new is not None:
                 st.warning("有効な銘柄行が見つかりませんでした（4桁コードを含む行が必要）。")
 
-    # 安定キー "pf_editor" を使う（動的キーはページ遷移でウィジェット状態が破棄される）
-    edited = st.data_editor(
-        st.session_state["pf"], num_rows="dynamic", use_container_width=True,
-        key="pf_editor",
-        column_config={
-            "コード": st.column_config.TextColumn("コード", help="4桁の証券コード", required=True),
-            "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
-            "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
-        })
+    # 保有銘柄リスト（コードから銘柄名を自動表示・普段は折りたたみ）
+    _code2name = dict(zip(df["code"].astype(str), df["name"]))
+    _pf_now = st.session_state["pf"]
+    _n_rows = int((_pf_now["コード"].astype(str).str.strip() != "").sum()) if not _pf_now.empty else 0
+    # 初回（空）は開いた状態、入力済みなら折りたたみ（集計を主役に）
+    with st.expander(f"📝 保有銘柄リスト（{_n_rows}銘柄・クリックで編集）", expanded=(_n_rows == 0)):
+        # 銘柄名はコードから導出する読み取り専用列（データ本体には持たない）
+        _pf_disp = _pf_now.copy()
+        _pf_disp.insert(1, "銘柄名",
+                        _pf_disp["コード"].astype(str).str.strip().map(_code2name).fillna("—"))
+        # 安定キー "pf_editor" を使う（動的キーはページ遷移でウィジェット状態が破棄される）
+        edited = st.data_editor(
+            _pf_disp, num_rows="dynamic", use_container_width=True,
+            key="pf_editor",
+            disabled=["銘柄名"],
+            column_config={
+                "コード": st.column_config.TextColumn("コード", help="4桁の証券コード", required=True),
+                "銘柄名": st.column_config.TextColumn("銘柄名", help="コードから自動表示", width="medium"),
+                "口数": st.column_config.NumberColumn("口数", min_value=0, step=1, default=1),
+                "取得単価": st.column_config.NumberColumn("取得単価(円/口)", help="含み益の計算用。空欄可", min_value=0),
+            })
+        edited = edited.drop(columns=["銘柄名"], errors="ignore")
     # .copy() で独立したコピーを保存（参照が無効化されるのを防ぐ）
     st.session_state["pf"] = edited.copy()
 
