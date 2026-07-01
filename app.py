@@ -114,13 +114,8 @@ def _inject_apple_icon() -> None:
           setMeta('apple-mobile-web-app-capable', 'yes');
           setMeta('mobile-web-app-capable', 'yes');
           setMeta('apple-mobile-web-app-status-bar-style', 'default');
-          // Streamlit Cloud 外側のオーナー用 "Manage app" ボタンを非表示（邪魔なので）。
-          if(!doc.getElementById('__hide_manage_app__')){
-            var st = doc.createElement('style');
-            st.id = '__hide_manage_app__';
-            st.textContent = '[data-testid="manage-app-button"]{display:none!important;}';
-            head.appendChild(st);
-          }
+          // Streamlit Cloud 外側のオーナー用 "Manage app" ボタンは通常は非表示にするが、
+          // デバッグ時 (?debug=1) は表示（ログを直接見るため）。
           setMeta('apple-mobile-web-app-title', 'J-REIT分析');
         })();
         </script>""".replace("__ICON__", APPLE_ICON_PUBLIC_URL),
@@ -1651,6 +1646,23 @@ def _require_login() -> bool:
     with _c2:
         st.button("🔐 Google でログイン", type="primary",
                   on_click=st.login, use_container_width=True)
+    # デバッグ: Authlib のインストール可否と Python 版を表示（原因切り分け用）。
+    # ？debug=1 で明示的に表示する運用に将来変更可。今は常時表示（インストール確認取れ次第削除）。
+    import sys as _sys
+    try:
+        import authlib as _al
+        _al_msg = f"✅ Authlib {_al.__version__} imported (python {_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro})"
+        _al_ok = True
+    except Exception as _e:
+        _al_msg = f"❌ Authlib import failed: {type(_e).__name__}: {_e} (python {_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro})"
+        _al_ok = False
+    st.caption(_al_msg)
+    if not _al_ok:
+        st.info(
+            "⚠️ Authlib がインストールされていません。Streamlit Cloud の "
+            "**Manage app**（右下）→ ログで、requirements.txt からの pip install で "
+            "Authlib がインストールされているか確認してください。"
+        )
     return False
 
 
@@ -1707,7 +1719,6 @@ def main():
     st.markdown("""
 <style>
 [data-testid="stBottom"],
-[data-testid="manage-app-button"],
 [data-testid="stDeployButton"],
 [data-testid="stStatusWidget"],
 .stDeployButton,
