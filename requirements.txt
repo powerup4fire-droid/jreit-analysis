@@ -6,4 +6,4 @@ Authlib>=1.3.2
 pandas>=2.2
 numpy>=1.26
 # アクセス時の最新株価取得（yfinance）。失敗時はDBのキャッシュ値にフォールバック。
-yfinance>=0.2.40
+yfinance>=0.2.40 # force-rebuild for auth
