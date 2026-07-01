@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Production-grade J-REIT analysis system (cached-first)"
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.32",
+    # st.login() には Streamlit 1.42+ と Authlib が必要（Streamlit Cloud はこの pyproject を優先）
+    "streamlit>=1.42",
+    "Authlib>=1.3.2",
     "yfinance>=0.2.40",
     "pandas>=2.2",
     "numpy>=1.26",
