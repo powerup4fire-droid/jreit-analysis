@@ -1626,7 +1626,7 @@ def _require_login() -> bool:
     [auth] secrets が未設定の環境（ローカルなど）では常に True（=通過）。"""
     # secrets に [auth] が無い環境（ローカル・古いバージョン等）はゲートしない
     try:
-        st.secrets["auth"]  # type: ignore[index]
+        _ = dict(st.secrets["auth"])  # 存在チェック（マジック表示回避）
     except Exception:
         return True
     user = getattr(st, "user", None)
@@ -1696,7 +1696,7 @@ def main():
         '</div>', unsafe_allow_html=True)
     # 右上にログアウトボタン（auth 有効時のみ）
     try:
-        st.secrets["auth"]  # type: ignore[index]
+        _ = dict(st.secrets["auth"])  # 存在チェック（マジック表示回避）
         _lc = st.columns([9, 1])
         with _lc[1]:
             if st.button("ログアウト", key="_logout_btn", use_container_width=True):
