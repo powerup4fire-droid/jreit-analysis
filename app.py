@@ -1621,8 +1621,43 @@ def render_portfolio(df, divs):
 # ===========================================================================
 # エントリ
 # ===========================================================================
+def _require_login() -> bool:
+    """st.login() ゲート。未ログインならログイン画面だけ描画して False を返す。
+    [auth] secrets が未設定の環境（ローカルなど）では常に True（=通過）。"""
+    # secrets に [auth] が無い環境（ローカル・古いバージョン等）はゲートしない
+    try:
+        st.secrets["auth"]  # type: ignore[index]
+    except Exception:
+        return True
+    user = getattr(st, "user", None)
+    if user is not None and getattr(user, "is_logged_in", False):
+        return True
+    # ログイン画面
+    _inject_apple_icon()
+    st.markdown(header_title_html(), unsafe_allow_html=True)
+    st.markdown(
+        '<div style="max-width:520px;margin:24px auto;padding:22px 24px;'
+        'background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;'
+        'box-shadow:0 1px 3px rgba(0,0,0,.04)">'
+        '<div style="font-size:1.05rem;font-weight:700;color:#1f2937;margin-bottom:8px">'
+        'ログインが必要です</div>'
+        '<div style="font-size:.9rem;color:#6b7280;line-height:1.7">'
+        'ポートフォリオを 端末をまたいで 保存できるよう、Google アカウントで'
+        ' ログインしてください。データは あなたのメールアドレス単位で分離されます。'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+    _c1, _c2, _c3 = st.columns([1, 1, 1])
+    with _c2:
+        st.button("🔐 Google でログイン", type="primary",
+                  on_click=st.login, use_container_width=True)
+    return False
+
+
 def main():
     _inject_apple_icon()
+    if not _require_login():
+        return
     if not DB.exists():
         st.markdown(header_title_html(), unsafe_allow_html=True)
         st.error("data/jreit.db がありません。"); return
@@ -1639,6 +1674,15 @@ def main():
     else:
         _pac = df.attrs.get("price_asof_cache")
         price_note = f'株価 {_pac} 終値（キャッシュ）' if _pac else 'キャッシュ参照のみ'
+    # ログイン中ユーザーの表示（あれば）+ ログアウトボタン。auth 未使用環境では非表示。
+    _user_note = ''
+    try:
+        _u = getattr(st, 'user', None)
+        _email = getattr(_u, 'email', None) if _u is not None else None
+        if _email:
+            _user_note = f'<span style="font-size:12px;color:#8a909a">・　{_email}</span>'
+    except Exception:
+        pass
     # タイトル＋メタ情報を1行のヘッダにまとめて余白を最適化
     st.markdown(
         '<div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;'
@@ -1648,7 +1692,17 @@ def main():
         f'<img src="{HEADER_ICON_URI}" alt="" style="width:38px;height:38px">'
         'J-REIT 分析ダッシュボード</span>'
         f'<span style="font-size:12px;color:#8a909a">銘柄 {len(reits)}　・　{price_note}</span>'
+        f'{_user_note}'
         '</div>', unsafe_allow_html=True)
+    # 右上にログアウトボタン（auth 有効時のみ）
+    try:
+        st.secrets["auth"]  # type: ignore[index]
+        _lc = st.columns([9, 1])
+        with _lc[1]:
+            if st.button("ログアウト", key="_logout_btn", use_container_width=True):
+                st.logout()
+    except Exception:
+        pass
 
     st.markdown("""
 <style>
