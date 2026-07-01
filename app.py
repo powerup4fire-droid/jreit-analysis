@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt   # Streamlit同梱（追加インストール不要）
 import cloud_store      # Cloudflare KV 永続化（ログインユーザー単位・端末間同期）
+import invite_store     # 招待リンク + 自動許可リスト（Cloudflare KV）
 import base64
 import streamlit.components.v1 as components
 
@@ -89,7 +90,13 @@ def _inject_apple_icon() -> None:
     Streamlit Cloud はアプリを iframe で包んだ「外側ページ」を配信し、その外側に
     apple-touch-icon=/-/build/favicon_256.png（Streamlit標準）を持つ。Safari の
     Add-to-Home はその外側を読むため、外側(window.top, 同一オリジン)の <head> を上書きする。
+
+    外側 <head> への変更はページを閉じるまで残るため、セッション1回だけ実行して
+    毎リランの iframe 生成コストを省く。
     """
+    if st.session_state.get("_apple_icon_injected"):
+        return
+    st.session_state["_apple_icon_injected"] = True
     components.html(
         """<script>
         (function(){
@@ -421,7 +428,14 @@ def load_overrides() -> dict:
         return {}
 
 
+@st.cache_data(ttl=300, show_spinner="データを準備中…")
 def build_frame():
+    """整形済みフレーム一式（5分キャッシュ）。
+
+    merge / apply / 銘柄ごとの分配金集計など毎リラン走ると重い処理を、
+    ページ操作のたびに再計算しないようキャッシュする。ライブ株価は
+    fetch_live_prices(ttl=600) 側のキャッシュと合わせ 5〜10分粒度で更新。
+    """
     reits, metrics, divs, runs = load("reits"), load("stock_metrics"), load("dividends"), load("scrape_runs")
     if reits.empty:
         return None, None, None, reits
@@ -1654,9 +1668,107 @@ def _require_login() -> bool:
     return False
 
 
+def _viewer_email() -> str | None:
+    """ログイン中ユーザーの email（未ログイン/auth無効なら None）。"""
+    u = getattr(st, "user", None)
+    if u is None:
+        return None
+    try:
+        return getattr(u, "email", None) or None
+    except Exception:
+        return None
+
+
+def _require_invite() -> bool:
+    """招待ゲート（招待リンク → 自動許可リスト方式）。
+
+    - secrets の [invite] 未設定 or KV 未接続なら無効（=全員通過、後方互換）
+    - 許可リスト登録済み or 管理者 → 通過
+    - 未登録でも URL の ?invite=<code> が一致 → その場で登録して通過
+      （OAuthリダイレクトでクエリが落ちた場合に備え、コード手入力欄も用意）
+    """
+    if not invite_store.enabled():
+        return True
+    email = _viewer_email()
+    if not email:
+        return True  # authゲート無効環境（ローカル開発）では制限しない
+    if invite_store.is_allowed(email):
+        return True
+    code = invite_store.invite_code()
+    # 招待リンク経由（?invite=コード）なら自動登録
+    try:
+        qp = st.query_params.get("invite")
+    except Exception:
+        qp = None
+    if qp and qp == code:
+        invite_store.add(email)
+        try:
+            del st.query_params["invite"]
+        except Exception:
+            pass
+        return True
+    # 入場不可画面（招待コードの手入力でも登録できる）
+    _inject_apple_icon()
+    st.markdown(header_title_html(), unsafe_allow_html=True)
+    st.markdown(
+        '<div style="max-width:520px;margin:24px auto;padding:22px 24px;'
+        'background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;'
+        'box-shadow:0 1px 3px rgba(0,0,0,.04)">'
+        '<div style="font-size:1.05rem;font-weight:700;color:#1f2937;margin-bottom:8px">'
+        '招待制のアプリです</div>'
+        '<div style="font-size:.9rem;color:#6b7280;line-height:1.7">'
+        f'ログイン中: {email}<br>'
+        'このアカウントは まだ招待されていません。招待リンクを もう一度開くか、'
+        '招待コードを入力してください。'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+    _c1, _c2, _c3 = st.columns([1, 2, 1])
+    with _c2:
+        _in = st.text_input("招待コード", key="_invite_input",
+                            label_visibility="collapsed", placeholder="招待コードを入力")
+        if st.button("入場する", type="primary", use_container_width=True):
+            if _in and _in.strip() == code:
+                invite_store.add(email)
+                st.rerun()
+            else:
+                st.error("招待コードが違います。")
+        st.button("別のアカウントでログインし直す", on_click=st.logout,
+                  use_container_width=True)
+    return False
+
+
+def _render_invite_admin(email: str | None) -> None:
+    """管理者向け: 招待リンク表示・許可リスト一覧・取り消しUI。"""
+    if not invite_store.enabled():
+        return
+    adm = invite_store.admin_email()
+    if not (adm and email and email.lower() == adm.lower()):
+        return
+    with st.expander("👥 招待管理（管理者のみに表示）"):
+        try:
+            base = str(st.secrets["auth"]["redirect_uri"]).replace("/oauth2callback", "")
+            st.caption("知人に送る招待リンク（タップ→Googleログインで自動登録）")
+            st.code(f"{base}/?invite={invite_store.invite_code()}", language=None)
+        except Exception:
+            pass
+        rows = sorted(invite_store.allowlist().items())
+        if not rows:
+            st.caption("登録済みユーザーは まだいません。")
+        for em, meta in rows:
+            c1, c2, c3 = st.columns([4, 3, 1.6])
+            c1.markdown(f"`{em}`")
+            c2.caption(f"登録: {str(meta.get('added', ''))[:10]}")
+            if c3.button("取り消し", key=f"_rm_{em}", use_container_width=True):
+                invite_store.remove(em)
+                st.rerun()
+
+
 def main():
     _inject_apple_icon()
     if not _require_login():
+        return
+    if not _require_invite():
         return
     if not DB.exists():
         st.markdown(header_title_html(), unsafe_allow_html=True)
@@ -1675,14 +1787,9 @@ def main():
         _pac = df.attrs.get("price_asof_cache")
         price_note = f'株価 {_pac} 終値（キャッシュ）' if _pac else 'キャッシュ参照のみ'
     # ログイン中ユーザーの表示（あれば）+ ログアウトボタン。auth 未使用環境では非表示。
-    _user_note = ''
-    try:
-        _u = getattr(st, 'user', None)
-        _email = getattr(_u, 'email', None) if _u is not None else None
-        if _email:
-            _user_note = f'<span style="font-size:12px;color:#8a909a">・　{_email}</span>'
-    except Exception:
-        pass
+    _email = _viewer_email()
+    _user_note = (f'<span style="font-size:12px;color:#8a909a">・　{_email}</span>'
+                  if _email else '')
     # タイトル＋メタ情報を1行のヘッダにまとめて余白を最適化
     st.markdown(
         '<div style="display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;'
@@ -1697,12 +1804,14 @@ def main():
     # 右上にログアウトボタン（auth 有効時のみ）
     try:
         _ = dict(st.secrets["auth"])  # 存在チェック（マジック表示回避）
-        _lc = st.columns([9, 1])
-        with _lc[1]:
+        _cols_top = st.columns([9, 1])
+        with _cols_top[1]:
             if st.button("ログアウト", key="_logout_btn", use_container_width=True):
                 st.logout()
     except Exception:
         pass
+    # 管理者のみ: 招待リンク・許可リスト管理
+    _render_invite_admin(_email)
 
     st.markdown("""
 <style>
