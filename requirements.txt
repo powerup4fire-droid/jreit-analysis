@@ -1,9 +1,9 @@
 # Streamlit Community Cloud 用（ダッシュボード app.py の実行に必要な最小依存）
 # ※データ取得パイプライン(update_data.py)の依存は pyproject.toml 側
 # st.login() を使うため 1.42+ が必要（Authlib は st.login の依存として明示）
-streamlit>=1.42
-Authlib>=1.3.2
+streamlit==1.58.0
+Authlib==1.3.2
 pandas>=2.2
 numpy>=1.26
 # アクセス時の最新株価取得（yfinance）。失敗時はDBのキャッシュ値にフォールバック。
-yfinance>=0.2.40 # force-rebuild for auth
+yfinance>=0.2.40
